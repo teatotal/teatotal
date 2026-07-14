@@ -58,7 +58,7 @@ Each emit call inserts at an index the caller advances, a mark or `end`, paintin
 
 The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic`, and `mono`; a missing one is an error, and extra keys are kept but nothing draws with them. The heading keys `h1`, `h2`, and `h3` are optional, each falling back to `bold` when the host leaves it out. ATX heading lines map by their marker count, and four through six `#` all clamp to `h3`, so a document never asks for a face the host did not size.
 
-A flat list renders as one logical line per item: a marker, a tab, then the item text through the inline-run path so markdown inside an item still styles. The marker is a `•` bullet for an unordered item or the item's own number and a dot for an ordered one (`3. ` renders `3.`, the source numbering preserved rather than renumbered).
+A flat list renders as one logical line per item: a marker, a tab, then the item text through the inline-run path so markdown inside an item still styles. The marker is a `•` bullet for an unordered item or the item's own number and a dot for an ordered one (`3. ` renders `3.`, the source numbering preserved rather than renumbered). The whole list carries `td-list`, a hanging indent that sets the marker at the left margin and lands the item text, and any line it wraps to, at the tab stop past it; the tag is geometry only, so colour still comes from the base tags.
 
 ## THE TABLE AND REFIT LIFECYCLE
 
@@ -68,7 +68,7 @@ The stops depend on the font, not the pane width, so a resize needs no recompute
 
 ## LIMITS
 
-tkdown is not a full CommonMark implementation. Its lists are flat: an indented continuation or a nested marker stays literal. It has no links and no setext (underline) headings; underscores never mark emphasis; anything outside the covered forms renders as literal text. It also takes completed blocks, not a stream: each call paints a finished body in one pass. A host streaming content re-renders the affected block from its own model and repaints it whole.
+tkdown is not a full CommonMark implementation. Its lists are flat: an indented continuation or a nested marker stays literal, and a host wanting nested lists asks for a block model this renderer keeps deliberately flat. It has no links and no setext (underline) headings; underscores never mark emphasis; anything outside the covered forms renders as literal text. It also takes completed blocks, not a stream: each call paints a finished body in one pass. A host streaming content re-renders the affected block from its own model and repaints it whole.
 
 ## REQUIREMENTS
 

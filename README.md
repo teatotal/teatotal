@@ -20,6 +20,8 @@ The starting stock is in-house: modules grown inside our own desktop application
 
 Send a pull request with your `name-version.tm` file and a `name.md` man page beside it. That is the whole bar: the PR will be merged.
 
+The in-house modules grow inside the applications they were written for and sync here when a version is published. This repository is the published home of their source and man pages: the code evolves in its host, and each release lands here as the stable copy you fetch.
+
 ## License
 
 [MIT](LICENSE).
