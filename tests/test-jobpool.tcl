@@ -47,7 +47,7 @@ set WORKER {
     proc jp_cancelled? {row} { return [tsv::exists $::jobpool_tsv $row.cancel] }
     proc jp_paused? {row}    { return [tsv::exists $::jobpool_tsv $row.pause] }
     proc jp_msg {name args} {
-        thread::send -async $::main_tid [list $::dispatcher $name {*}$args]
+        thread::send -async $::main_tid [list $::pool $name {*}$args]
     }
     proc upload   {row opts} { fake_worker $row $opts }
     proc download {row opts} { fake_worker $row $opts }
@@ -65,6 +65,11 @@ set WORKER {
                         while {[jp_paused? $row]} { after 20 }
                         jp_msg on_resumed $row
                     }
+                }
+                hold {
+                    jp_msg on_rate_limited $row [lindex $step 1]
+                    after [lindex $step 2]
+                    jp_msg on_rate_limit_cleared $row
                 }
             }
         }
@@ -150,6 +155,17 @@ check queue-held 3 [llength [$p queued_rows]]
 $p resume_queue
 foreach r {r1 r2 r3} { wait_terminal $p $r 3000 }
 check queue-drained 3 [llength [lmap r {r1 r2 r3} {expr {[$p state $r] eq "done" ? $r : [continue]}}]]
+$p destroy
+
+# -- a worker held on an external limit occupies its slot, then clears --------
+
+set p [new_pool 1]
+$p enqueue r1 fetch fake_worker {plan {{sleep 20} {hold 5 120} {sleep 20}}}
+wait_state $p r1 rate_limited 1000
+check held-state rate_limited [$p state r1]
+check held-holds-slot 1 [$p posted_count]
+wait_terminal $p r1 2000
+check held-cleared-done done [$p state r1]
 $p destroy
 
 # -- a terminal row is requeued and runs again --------------------------------

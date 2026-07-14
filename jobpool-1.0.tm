@@ -21,7 +21,7 @@ package provide jobpool 1.0
 #   set pool [jobpool new 8 -init {source workers.tcl}]
 #   $pool subscribe row-state {apply {{row st} {puts "$row -> $st"}}}
 #   $pool set_worker_cap upload 1          ;# uploads serialise; rest fan out
-#   $pool enqueue job42 render render_one {file a.blend}
+#   $pool enqueue job42 convert convert_one {src big.tiff}
 #   $pool cancel job42                     ;# reaches it even mid-render
 #
 # THE POOL AND ITS WORKERS
@@ -29,7 +29,7 @@ package provide jobpool 1.0
 # Workers live in the thread pool's own interpreters, seeded once from the
 # -init script. That script defines the worker procs (a row is posted as
 # `<worker> <row> <opts>`) and whatever they need; jobpool adds three
-# globals to it before it runs - ::main_tid and ::dispatcher, so a worker
+# globals to it before it runs - ::main_tid and ::pool, so a worker
 # can message home, and ::jobpool_tsv, the shared-variable array a worker
 # polls for its cancel and pause sentinels. A worker reports progress and
 # completion by calling back into the pool object across threads (the
@@ -137,7 +137,7 @@ oo::class create jobpool {
         set tid [thread::id]
         set initcmd "
             set ::main_tid [list $tid]
-            set ::dispatcher [list $me]
+            set ::pool [list $me]
             set ::jobpool_tsv [list $Sentinels]
             $init
         "
@@ -170,7 +170,7 @@ oo::class create jobpool {
     # post, as `{*}$cb $row $kind $idx $total`. A return of "abort"
     # cancels the row before any worker runs; anything else lets it post.
     # idx is the row's 1-based position in the state map, total its size,
-    # a stable rising position a step-through UI can gate on.
+    # a stable rising position a step-through caller can gate on.
     method set_pre_post_callback {cb} { set PrePostCallback $cb }
 
     # ─── Accessors ───────────────────────────────────────────────────
@@ -280,7 +280,7 @@ oo::class create jobpool {
     }
 
     # prune_missing - drop rows whose key is not in $valid_rows, so a
-    # state map can shed entries a view refresh removed. Active rows
+    # pool map can be reconciled against a caller's current set. Active rows
     # (running/paused/rate_limited) keep their state: they own a slot and
     # will reach a terminal message on their own. Only terminal or
     # not-yet-posted rows are collectable.

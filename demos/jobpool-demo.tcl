@@ -18,12 +18,12 @@ set WORKER {
         for {set i 0} {$i < [dict get $opts beats]} {incr i} {
             if {[tsv::exists $::jobpool_tsv $row.cancel]} {
                 thread::send -async $::main_tid \
-                    [list $::dispatcher on_cancelled $row]
+                    [list $::pool on_cancelled $row]
                 return
             }
             after 200
         }
-        thread::send -async $::main_tid [list $::dispatcher on_done $row]
+        thread::send -async $::main_tid [list $::pool on_done $row]
     }
 }
 

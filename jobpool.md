@@ -12,7 +12,7 @@ package require jobpool
 set pool [jobpool new 8 -init {source workers.tcl}]
 $pool subscribe row-state {apply {{row st} {puts "$row -> $st"}}}
 $pool set_worker_cap upload 1            ;# uploads serialise, the rest fan out
-$pool enqueue job42 render render_one {file a.blend}
+$pool enqueue job42 convert convert_one {src big.tiff}
 $pool cancel job42                       ;# reaches it even mid-render
 ```
 
@@ -42,7 +42,7 @@ Pre-spawning is not a tuning choice but a correctness one. A pool grown lazily f
 
 ## THE WORKERS
 
-A worker proc runs in a pool interpreter and is posted as `<worker> <row> <opts>`. Before the *-init* script runs, the pool sets three globals in the interpreter: `::main_tid` and `::dispatcher`, the thread and object a worker messages home to, and `::jobpool_tsv`, the shared-variable array a worker reads for its cancel and pause sentinels. A worker stays responsive to cancel and pause by checking that array between units of work, and reports its progress by calling the message methods below on `::dispatcher` across threads.
+A worker proc runs in a pool interpreter and is posted as `<worker> <row> <opts>`. Before the *-init* script runs, the pool sets three globals in the interpreter: `::main_tid` and `::pool`, the thread and object a worker messages home to, and `::jobpool_tsv`, the shared-variable array a worker reads for its cancel and pause sentinels. A worker stays responsive to cancel and pause by checking that array between units of work, and reports its progress by calling the message methods below on `::pool` across threads.
 
 ## THE MESSAGE SURFACE
 
@@ -64,11 +64,11 @@ A consumer whose workers send kinds of their own subclasses jobpool and adds the
 
 ## THE POOL API
 
-**enqueue** *row kind worker opts*: register a row with its kind, the worker proc that runs it, and the opts dict the worker receives. **cancel** *row*: drop a queued row, or set the sentinel for a running one. **pause_row** / **resume_row** *row*, **pause_queue** / **resume_queue**: hold one row, or the whole queue. **requeue** *row*: send a terminal row back to queued for a retry. **prune_missing** *valid_rows*: drop rows a view refresh removed, keeping any that still hold a slot. **set_worker_cap** *kind cap*: the per-kind sub-cap. **set_pre_post_callback** *cmd*: a gate fired before each post, returning `abort` to cancel the row. **subscribe** *event cmd*. Read-only: **state**, **kind_of**, **count_by_kind**, **active_rows**, **queued_rows**, **all_rows**, **posted_count**, **is_queue_paused**, **jobs_cap**.
+**enqueue** *row kind worker opts*: register a row with its kind, the worker proc that runs it, and the opts dict the worker receives. **cancel** *row*: drop a queued row, or set the sentinel for a running one. **pause_row** / **resume_row** *row*, **pause_queue** / **resume_queue**: hold one row, or the whole queue. **requeue** *row*: send a terminal row back to queued for a retry. **prune_missing** *valid_rows*: drop rows a caller no longer lists (its set changed under it), keeping any that still hold a slot. **set_worker_cap** *kind cap*: the per-kind sub-cap. **set_pre_post_callback** *cmd*: a gate fired before each post, returning `abort` to cancel the row. **subscribe** *event cmd*, **subscribed** *event*. Read-only: **state**, **kind_of**, **count_by_kind**, **active_rows**, **queued_rows**, **all_rows**, **posted_count**, **is_queue_paused**, **jobs_cap**.
 
 ## THE EVENT STREAM
 
-**subscribe** *event cmd* runs *cmd* with the event's arguments appended on every fire. `row-state` fires on every transition as `row new-state`; the finer `row-phase`, `row-progress`, `row-done`, `row-failed`, `row-paused`, `row-resumed`, `row-rate-limited`, and `row-rate-limit-cleared` carry each message on. A Tk view subscribes to `row-state` and repaints; a headless run subscribes to `row-done` and collects.
+**subscribe** *event cmd* runs *cmd* with the event's arguments appended on every fire. `row-state` fires on every transition as `row new-state`; the finer `row-phase`, `row-progress`, `row-done`, `row-failed`, `row-paused`, `row-resumed`, `row-rate-limited`, and `row-rate-limit-cleared` carry each message on. `queue-paused` and `queue-resumed` fire when the whole queue is held or released. A Tk view subscribes to `row-state` and repaints; a headless run subscribes to `row-done` and collects. **subscribed** *event* tells whether an event has any listener.
 
 ## NOTES
 
