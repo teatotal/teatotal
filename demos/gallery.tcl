@@ -43,6 +43,8 @@ set DEMOS [dict create \
         runargs {oolong --temp 90 --time 180} teaches "parser and help from one declaration"] \
     deadman    [dict create file deadman-demo.tcl kind CLI page deadman.md \
         runargs {} teaches "a subprocess watchdog that owns the whole kill"] \
+    jobpool    [dict create file jobpool-demo.tcl kind CLI page jobpool.md \
+        runargs {} teaches "a worker pool that owns each job's lifecycle"] \
 ]
 
 # ---- argv through ocmdline --------------------------------------------------

@@ -11,6 +11,7 @@ The starting stock is in-house: modules grown inside our own desktop application
 | Module                      | The problem it solves                                                                                                                                                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [deadman](deadman.md)       | An exec wedges, and the kill that follows takes the launcher while its forked children keep the lock file. deadman runs the command in its own process group, kills the whole tree on stall, wall clock, or the caller's own check, and reports the real exit code and which detector fired. |
+| [jobpool](jobpool.md)       | `tpool` runs your jobs but owns none of their lifecycle: you cannot cancel one that is already running, hold the queue, or cap one kind of work while the rest fan out. jobpool adds the per-row state machine, cooperative cancel and pause, a per-kind sub-cap, and an event stream a view subscribes to. |
 | [leash](leash.md)           | Destroy a TclOO object and a timer it armed still fires, into a dead command name; the mixin's destructor cancels whatever is pending.                                                |
 | [ocmdline](ocmdline.md)     | Parsing that keeps occurrence order, because a flag that negates the one after it or cuts a list in two needs the order a settings dict throws away. Parse and help both render from one option table, so the help cannot promise a flag the parser refuses, which is the drift every hand-rolled argv loop eventually grows. |
 | [streamdoc](streamdoc.md)   | Stream a line into a Tk text widget while someone reads it, or fold a section above them, and their scroll jumps; streamdoc brackets every mutation so the line they are on stays put. |
@@ -28,6 +29,7 @@ wish9.0 demos/gallery.tcl
 The gallery lists the demos, paints the selected module's man page into a reading pane, runs a demo as a deadman-watched subprocess with its output streaming below, and shows its source - and is itself built from the module stock it demonstrates. Each demo also runs standalone:
 
 - `demos/deadman-demo.tcl` - a clean exit, a stall kill, and a TERM-trapper met with escalation; the same verdict dict for each.
+- `demos/jobpool-demo.tcl` - a batch through a two-slot pool, every state change printed, one job cancelled mid-run, one kind held to a single worker.
 - `demos/leash-demo.tcl` - counters whose timers die with their owner; destroy one card and the others keep counting.
 - `demos/ocmdline-demo.tcl` - a tea timer whose help and parser render from one option table (`tclsh9.0 demos/ocmdline-demo.tcl --help`).
 - `demos/streamdoc-demo.tcl` - a streaming feed of foldable regions that never moves the line you are reading.
