@@ -34,6 +34,16 @@ The gallery lists the demos, paints the selected module's man page into a readin
 - `demos/streamtree-demo.tcl` - a sortable, resizable, streaming tree drawn in one text widget.
 - `demos/tkdown-demo.tcl` - a markdown sampler pane; the font-size spinbox refits the table live.
 
+## Tests
+
+Every module carries a standalone test under `tests/`, and one script runs them together:
+
+```sh
+tests/run.sh
+```
+
+The runner turns the StreamTree and StreamDoc audit gates on for the whole suite, so a passing assertion is not the whole bar: a test that silently desyncs an engine mark still fails on the `INVARIANT @` line the gate writes. Tk tests run under `wish9.0` on a private Xvfb display, never an existing one where the windows would land over your work; the rest run under `tclsh9.0`. The script prints one line per test, exits with the failure count, and ends on `SUITE PASS` or `SUITE FAILED`. The `bench-*.tcl` scripts beside them are benchmarks, left out of the run.
+
 ## Contributing
 
 Send a pull request with your `name-version.tm` file and a `name.md` man page beside it. That is the whole bar: the PR will be merged.
