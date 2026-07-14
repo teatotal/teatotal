@@ -2,9 +2,10 @@
 # The teatotal gallery: a launcher for the module demos, built from every
 # module it demonstrates. ocmdline reads its argv, a streamtree lists the
 # demos, tkdown paints the selected module's man page into the reading pane,
-# each run's output streams into a streamdoc region below, and every deferred
-# callback is leash-armed so closing the window mid-run cannot fire into a
-# dead object.
+# each run's output streams into a streamdoc region below, deadman watches
+# the running demo and kills its whole tree when the window closes mid-run,
+# and every deferred callback is leash-armed so a torn-down gallery cannot
+# be called back.
 #
 # Run it with bare wish:   wish9.0 demos/gallery.tcl
 #                          wish9.0 demos/gallery.tcl --demo leash
