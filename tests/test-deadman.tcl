@@ -148,6 +148,29 @@ deadman::cancel $h
 drain 400
 check cancel-silent 0 $cancelled
 
+# -- cancel from inside a -line callback, mid-drain, leaves nothing ------------
+
+set line_cancelled 0
+proc linecancel {line} {
+    deadman::cancel $::lc_h
+    incr ::line_cancelled
+}
+proc lc_never {res} { set ::lc_done 1 }
+set lc_h [deadman::run {sh -c {echo first; echo second; sleep 30}} \
+    -line linecancel -done lc_never]
+drain 500
+check line-cancel-once 1 $line_cancelled
+check line-cancel-silent 0 [info exists ::lc_done]
+
+# -- a kill landing on an already-reaped handle is a no-op ----------------------
+
+set lk_res ""
+proc lk_done {res} { set ::lk_res $res }
+set lk_h [deadman::run {sh -c {echo done}} -done lk_done]
+if {$lk_res eq ""} { vwait ::lk_res }
+deadman::kill $lk_h stale
+check late-kill-noop exit [dict get $lk_res cause]
+
 # -- a bystander outside the group survives a group kill ------------------------
 #    The regression that matters most: kill(1) reads an unescorted -<pid> as
 #    -1, a broadcast to every process the caller owns. A module that loses
