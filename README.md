@@ -2,16 +2,31 @@
 
 teatotal comes from tea lovers' affection for Tcl and the lamentation that the language has no public repository where anyone can put a module.
 
-teatotal is that repository. A pull request adding a module is always accepted; whether a module is promoted on the front page is editorial, but the source goes in regardless, as long as no syntax error prevents it from being used in the simplest cases. If you wrote a module, PR yourself in. Anyone who fetched a module from here knows the one stable place its updates will keep arriving. We build the rules as it moves. Eventually there will be gating needed for security but let's not get ahead of ourselves now.
+teatotal is that repository. A pull request adding a module is always accepted; whether a module is promoted on the front page is editorial, but the source goes in regardless, as long as no syntax error prevents it from being used in the simplest cases. If you wrote a module, PR yourself in. Anyone who fetched a module from here knows the one stable place its updates will keep arriving.
+
+The gate is transparency, not review: a module here is plain Tcl source, one readable `.tm` file with no binary payload, so a PR is a diff anyone can inspect and what you fetch is what you can read. The one exception to always-accepted is malice; a module found to be malicious comes out. The rest of the rules we build as it moves.
+
+There is nothing here to keep alive. No server, no client, no build farm, no registry format: a directory tree of `.tm` files is already a package repository, which is how TIP 189 designed them, and git carries the tree. Any clone is the complete archive, man pages included; the day this copy goes unmaintained, every clone already is the repository.
 
 ## The modules
 
-The starting stock is in-house: modules grown inside our own desktop applications and cut out once their edges stopped moving. Each requires Tcl 9 and is MIT licensed; each `.tm` file is self-contained. Drop it on your `::tcl::tm::path` and `package require` it. Every module has a man page beside it.
+The starting stock is in-house: modules grown inside our own desktop applications and cut out once their edges stopped moving. Every module here runs on Tcl 9. That is the house guarantee and the reason for the requirement: if your tclsh is 9.0, anything you fetch from this repository loads and works. For the in-house stock the label is tested, each suite running under tclsh9.0, or wish9.0 where Tk is involved, before a release lands here (see Tests). Each module is MIT licensed, self-contained in one `.tm` file, and has a man page beside it.
+
+Drop a single module on your `::tcl::tm::path` and `package require` it, or take the shelf whole:
+
+```sh
+git clone https://github.com/teatotal/teatotal.git
+```
+
+```tcl
+::tcl::tm::path add /path/to/teatotal
+package require deadman
+```
 
 | Module                      | The problem it solves                                                                                                                                                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [deadman](deadman.md)       | An exec wedges, and the kill that follows takes the launcher while its forked children keep the lock file. deadman runs the command in its own process group, kills the whole tree on stall, wall clock, or the caller's own check, and reports the real exit code and which detector fired. |
-| [jobpool](jobpool.md)       | `tpool` runs your jobs but owns none of their lifecycle: you cannot cancel one that is already running, hold the queue, or cap one kind of work while the rest fan out. jobpool adds the per-row state machine, cooperative cancel and pause, a per-kind sub-cap, and an event stream a view subscribes to. |
+| [jobpool](jobpool.md)       | `tpool` runs your jobs but owns none of their lifecycle: you cannot cancel one that is already running, hold the queue, or cap one kind of work while the rest fan out. jobpool adds the per-job state machine, cooperative cancel and pause, a per-kind sub-cap, and an event stream a subscriber follows. |
 | [leash](leash.md)           | Destroy a TclOO object and a timer it armed still fires, into a dead command name; the mixin's destructor cancels whatever is pending.                                                |
 | [ocmdline](ocmdline.md)     | Parsing that keeps occurrence order, because a flag that negates the one after it or cuts a list in two needs the order a settings dict throws away. Parse and help both render from one option table, so the help cannot promise a flag the parser refuses, which is the drift every hand-rolled argv loop eventually grows. |
 | [streamdoc](streamdoc.md)   | Stream a line into a Tk text widget while someone reads it, or fold a section above them, and their scroll jumps; streamdoc brackets every mutation so the line they are on stays put. |
@@ -48,7 +63,7 @@ The runner turns the StreamTree and StreamDoc audit gates on for the whole suite
 
 ## Contributing
 
-Send a pull request with your `name-version.tm` file and a `name.md` man page beside it. That is the whole bar: the PR will be merged.
+Send a pull request with your `name-version.tm` file (lowercase name, as TIP 590 recommends) and a `name.md` man page beside it. The module is plain Tcl source and runs on Tcl 9: that is the promise every download from here carries, so yours carries it too. That is the whole bar: the PR will be merged.
 
 The in-house modules grow inside the applications they were written for and sync here when a version is published. This repository is the published home of their source and man pages: the code evolves in its host, and each release lands here as the stable copy you fetch.
 
