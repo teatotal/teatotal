@@ -77,6 +77,10 @@ Without setsid on PATH (`gsetsid` is probed too, for hosts whose coreutils carry
 
 The `-stdin` write is blocking and runs before the event loop starts, so a child that never reads its stdin while the input exceeds the pipe buffer holds the launch until it does; the wall cannot fire during that window. A lead process that closes its own stdout by hand and lives on delays the reap until it exits; with a stall or wall armed it is killed long before that matters. Progress means lines: a child that emits one endless unterminated line reads as silent to the stall clock.
 
+## NOTES
+
+Expect supervises a pty dialogue; tcllib's processman registers and kills pids; TclX carries the process-group signal. Each holds one cure, as timeout(1) holds the wall; deadman is the composition.
+
 ## REQUIREMENTS
 
 Tcl 9, no Tk, nothing beyond the core. Written and tested against Tcl 9 on Linux; whole-tree kills want setsid(1) (util-linux, or `gsetsid` from macOS coreutils), and degrade as described without it.
