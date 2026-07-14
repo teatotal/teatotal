@@ -39,6 +39,8 @@ set DEMOS [dict create \
         runargs {} teaches "deferred work that dies with its owner"] \
     ocmdline   [dict create file ocmdline-demo.tcl kind CLI page ocmdline.md \
         runargs {oolong --temp 90 --time 180} teaches "parser and help from one declaration"] \
+    deadman    [dict create file deadman-demo.tcl kind CLI page deadman.md \
+        runargs {} teaches "a subprocess watchdog that owns the whole kill"] \
 ]
 
 # ---- argv through ocmdline --------------------------------------------------
