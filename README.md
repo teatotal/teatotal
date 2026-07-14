@@ -16,6 +16,22 @@ The starting stock is in-house: modules grown inside our own desktop application
 | [streamtree](streamtree.md) | `ttk::treeview` cannot wrap a row, embed a widget in one, or take a streamed insert without the view jumping. This tree, drawn in a text widget under treeview's own vocabulary, can. |
 | [tkdown](tkdown.md)         | Chat and transcript bodies arrive as markdown, which a text widget shows as raw markers; tkdown paints the forms such bodies carry (fences, tables, headings, lists, emphasis) onto plain tags, the parse half Tk-free. |
 
+## Demos
+
+Every module has a runnable demo under `demos/`, and one launcher shows them all:
+
+```sh
+wish9.0 demos/gallery.tcl
+```
+
+The gallery lists the demos, paints the selected module's man page into a reading pane, runs a demo as a subprocess with its output streaming below, and shows its source - and is itself built from all five modules. Each demo also runs standalone:
+
+- `demos/leash-demo.tcl` - counters whose timers die with their owner; destroy one card and the others keep counting.
+- `demos/ocmdline-demo.tcl` - a tea timer whose help and parser render from one option table (`tclsh9.0 demos/ocmdline-demo.tcl --help`).
+- `demos/streamdoc-demo.tcl` - a streaming feed of foldable regions that never moves the line you are reading.
+- `demos/streamtree-demo.tcl` - a sortable, resizable, streaming tree drawn in one text widget.
+- `demos/tkdown-demo.tcl` - a markdown sampler pane; the font-size spinbox refits the table live.
+
 ## Contributing
 
 Send a pull request with your `name-version.tm` file and a `name.md` man page beside it. That is the whole bar: the PR will be merged.
