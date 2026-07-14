@@ -50,11 +50,11 @@ package provide deadman 1.0
 #
 # Details that exist because their absence once bit:
 #   group   setsid launches the child as its own process-group lead (for
-#           this pipe shape it execs in place, no fork), so kill -TERM
-#           -<pid> reaches the grandchildren; the positive-pid TERM behind
-#           it covers a host where setsid does fork. No setsid on PATH
-#           (gsetsid is probed too, for g-prefixed coreutils): same pipe
-#           path, but kills reach the lead pid only.
+#           this pipe shape it execs in place, no fork: a pipeline child
+#           is never already a group leader), so kill -TERM -<pid>
+#           reaches the grandchildren. No setsid on PATH (gsetsid is
+#           probed too, for g-prefixed coreutils): same pipe path, but
+#           kills reach the lead pid only.
 #   stall   the progress clock is seeded at spawn, not at epoch - so the
 #           first tick measures idleness from launch instead of reading an
 #           instant false stall - and advances on every stdout line.
@@ -179,7 +179,11 @@ proc ::deadman::run {argv args} {
     # binary channel, UTF-8 bytes, blocking write, half-close, and only
     # then non-blocking. The write is caught: a child that exits before
     # reading breaks the pipe, and the reap below tells that story better
-    # than an error here would.
+    # than an error here would. The blocking write runs before any timer
+    # is armed: a child that backpressures its stdout past the pipe
+    # buffer while stdin is still undrained holds the launch, and no
+    # detector can fire. An event-driven drain is the upgrade if that
+    # ever bites a real caller.
     if {$has_stdin} {
         fconfigure $chan -buffering none -translation binary
         catch {
@@ -189,8 +193,12 @@ proc ::deadman::run {argv args} {
         }
         catch {close $chan write}
     }
+    # The tcl8 profile matters: under Tcl 9's default strict profile one
+    # undecodable byte on stdout makes [gets] throw persistently with no
+    # EOF, and the drain would spin on the fileevent forever. Permissive
+    # decoding suits a watchdog; the child's bytes are its own business.
     fconfigure $chan -blocking 0 -buffering line \
-        -encoding utf-8 -translation auto
+        -encoding utf-8 -translation auto -profile tcl8
 
     set h "dm[incr seq]"
     set runs($h) [dict create \
@@ -265,15 +273,17 @@ proc ::deadman::cancel {h} {
     catch {close $chan}
     if {[dict get $r out_owned]} { catch {close [dict get $r out]} }
     if {[dict get $r done] eq ""} {
-        set sync($h) [dict create cause cancel exit 0 signal ""]
+        set res [dict create cause cancel exit 0 signal ""]
+        if {[dict get $r capture]} { dict set res stdout "" }
+        set sync($h) $res
     }
 }
 
 # Signal the child's process group (negative pid: setsid made the group id
-# the lead pid) and then the lead itself - belt and suspenders for a host
-# where setsid forked, or where the group send is refused. Without a
-# group, only the lead is reachable. The -- escort is what scopes the
-# group send: kill(1) reads an unescorted -<pid> as the -1 broadcast.
+# the lead pid) and then the lead itself, in case the group send is
+# refused. Without a group, only the lead is reachable. The -- escort is
+# what scopes the group send: kill(1) reads an unescorted -<pid> as the
+# -1 broadcast.
 proc ::deadman::Signal {r sig} {
     set lead [dict get $r lead]
     if {[dict get $r group]} { catch {exec kill -$sig -- -$lead} }
@@ -344,9 +354,10 @@ proc ::deadman::Escalate {h} {
 }
 
 # EOF never landed even after KILL - an orphan outside the group still
-# holds the write end. Close our end regardless: on a non-blocking pipe
-# the close does not wait, so a lost child forfeits the reap (exit 0, no
-# signal) and the recorded cause tells the story.
+# holds the write end. Close our end regardless: the reap's wait is on
+# the pipeline's lead, dead since the KILL, not on the orphan, so a lost
+# child forfeits nothing but its buffered tail and the recorded cause
+# tells the story.
 proc ::deadman::ForceClose {h} {
     variable runs
     if {![info exists runs($h)]} { return }

@@ -69,13 +69,13 @@ A dict of `cause`, `exit`, `signal`, and (without `-out`) `stdout`. `cause` is w
 
 ## THE KILL
 
-setsid makes the child a process-group lead, so `kill -TERM -- -<pid>` reaches the grandchildren; a positive-pid TERM behind it covers a host where setsid forks. The `--` escort matters more than it looks: `kill(1)` reads an unescorted `-<pid>` as `-1`, a broadcast to every process the caller's user owns - enough to end a desktop session with nothing in any log to say why. The escort is carried here, and the test suite keeps a bystander process alive across a group kill so it stays carried.
+setsid makes the child a process-group lead (for this pipe shape it execs in place: a pipeline child is never already a group leader), so `kill -TERM -- -<pid>` reaches the grandchildren; a positive-pid TERM follows in case the group send is refused. The `--` escort matters more than it looks: `kill(1)` reads an unescorted `-<pid>` as `-1`, a broadcast to every process the caller's user owns - enough to end a desktop session with nothing in any log to say why. The escort is carried here, and the test suite keeps a bystander process alive across a group kill so it stays carried.
 
 Without setsid on PATH (`gsetsid` is probed too, for hosts whose coreutils carry the g prefix), the same pipe path runs but kills reach the lead pid only; descendants the lead spawned survive as orphans. Detectors, causes, and exit codes are unaffected.
 
 ## LIMITS
 
-The `-stdin` write is blocking and runs before the event loop starts, so a child that never reads its stdin while the input exceeds the pipe buffer holds the launch until it does; the wall cannot fire during that window. A lead process that closes its own stdout by hand and lives on delays the reap until it exits; with a stall or wall armed it is killed long before that matters. Progress means lines: a child that emits one endless unterminated line reads as silent to the stall clock.
+The `-stdin` write is blocking and runs before any detector is armed, so a child that never reads its stdin while the input exceeds the pipe buffer holds the launch until it does, and a child that meanwhile fills its own stdout pipe deadlocks the launch outright; no detector can fire during that window. Callers feeding large inputs to children that write before they read should not use `-stdin`. A lead process that closes its own stdout by hand and lives on delays the reap until it exits; with a stall or wall armed it is killed long before that matters. Progress means lines: a child that emits one endless unterminated line reads as silent to the stall clock.
 
 ## NOTES
 

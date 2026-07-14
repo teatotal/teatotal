@@ -106,6 +106,17 @@ set r [deadman::run {sh -c {sleep 30}} -stall 150 -poll {100 pollcb} \
 check poll-cause  quota [dict get $r cause]
 check poll-called 2 $polls
 
+# -- an undecodable byte on stdout neither wedges the drain nor fakes a stall --
+
+set t0 [clock milliseconds]
+set r [deadman::run {sh -c {printf 'ok\n\377bad\n'; exit 0}} \
+    -stall 2000 -grace 300]
+set dt [expr {[clock milliseconds] - $t0}]
+check badbyte-cause  exit [dict get $r cause]
+check badbyte-exit   0    [dict get $r exit]
+check badbyte-prompt 1 [expr {$dt < 1500}]
+check badbyte-lines  1 [string match "ok\n*bad\n" [dict get $r stdout]]
+
 # -- -err stdout merges the child's stderr into the watched stream -------------
 
 set r [deadman::run {sh -c {echo out; echo err >&2}} -err stdout]
