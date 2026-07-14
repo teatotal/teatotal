@@ -2,7 +2,7 @@
 
 ## NAME
 
-deadman - a watchdog for child processes: whole-tree kills on stall, wall clock, or your own check, with an honest account of what happened
+deadman - a subprocess watchdog: a command run in its own process group, the whole tree killed on stall, wall clock, or the caller's say-so
 
 ## SYNOPSIS
 
@@ -13,18 +13,18 @@ package require deadman
 set res [deadman::run {sh -c make} -stall 60000 -wall 600000]
 # -> cause exit   exit 0   signal {}   stdout {...}
 
-# Asynchronous, with a budget check every 30s.
+# Asynchronous, with a quota check every 30s.
 set h [deadman::run $argv -out run.log \
-           -poll {30000 checkBudget} -done ranOut]
-proc checkBudget {h} { if {[overspent]} { deadman::kill $h budget } }
+           -poll {30000 checkQuota} -done ranOut]
+proc checkQuota {h} { if {[quotaGone]} { deadman::kill $h quota } }
 proc ranOut {res} { ... }
 ```
 
 ## DESCRIPTION
 
-Your exec hangs, and killing it doesn't fix it. The tool wedged an hour ago with nothing on stdout, `timeout(1)` would have waited the full wall anyway and then reported exit 124 in place of the real story, and the `kill` you finally sent took out the launcher while its forked children kept the license seat and the lock file. Every long-running child a script drives, a synthesis run, a regression binary, a build step, can go quiet forever, grind past any useful deadline, or breach a bound only the caller knows how to measure, and each needs the same three cures: notice, kill the whole tree, and report what actually happened.
+A pipe to a child process reports what the child prints, not whether the child is still earning its keep. Left alone, a long-running child - a synthesis run, a regression binary, a build step - can go quiet and hold the pipe open forever (stall), grind on past any useful deadline (wall), or breach a bound only its caller knows how to measure (poll). `timeout(1)` covers one slice of this: it waits out its full wall even when the child went quiet in the first minute, reports exit 124 in place of the child's own exit, and signals the launcher alone, so forked children keep the license seat and the lock file. And killing is never one kill: a child that traps TERM needs escalation, and a pipe whose write end escaped into an orphan never delivers EOF at all. Each hazard has a known cure; scattering the cures across callers is how one is always missing.
 
-deadman is those cures in one place. It launches the command in its own process group (setsid), streams stdout as it arrives, and watches with up to three independent detectors: a stall clock that fires after N ms without a line of output, a wall clock that fires at N ms regardless, and a poll that hands control to your own callback on a fixed cadence. Whichever detector fires, the whole process group gets TERM, a grace period, then KILL, then a forced close of the pipe, so even a child that traps TERM or an orphan holding the write end cannot wedge the run.
+deadman owns them all in one place. It launches the command in its own process group (setsid), streams stdout as it arrives, and watches with independent detectors: a stall clock that fires after N ms without a line of output, a wall clock that fires at N ms regardless, and a poll that hands control to the caller's own callback on a fixed cadence. Whichever detector fires, the whole process group gets TERM, a grace period, then KILL, then a forced close of the pipe, so neither a TERM-trapper nor an orphan holding the write end can wedge the run.
 
 Without `-done` the call is synchronous: it runs the event loop internally and returns the result. With `-done cmd` it returns a handle at once and invokes `cmd` with the result appended when the child is reaped; a coroutine name works as `cmd`, so a coroutine-based scheduler resumes exactly where it yielded.
 
@@ -39,8 +39,11 @@ Without `-done` the call is synchronous: it runs the event loop internally and r
   `-out chan-or-file`
   : Tee stdout there as lines arrive (an open channel is used and left open; a path is opened line-buffered). Without `-out`, stdout is collected and returned in the result.
 
+  `-err file-or-stdout`
+  : Redirect the child's stderr to a file, or, as the word `stdout`, merge it into the watched stream (a file named stdout wants a `./` prefix). Absent, stderr passes through to the caller's own.
+
   `-line cmd`
-  : Invoke *cmd* with each complete line. Handy for progress meters and timestamped logs: `-line {apply {{l} {puts [clock format [clock seconds]]:$l}}}`.
+  : Invoke *cmd* with each complete line. Serves progress meters and timestamped logs: `-line {apply {{l} {puts [clock format [clock seconds]]:$l}}}`.
 
   `-stall ms` / `-wall ms`
   : The two clocks, each off at 0 (the default). The stall clock is seeded at spawn and advances on every stdout line; a child is stalled when no line has arrived for the allowance. The wall clock is absolute.
@@ -62,15 +65,15 @@ Without `-done` the call is synchronous: it runs the event loop internally and r
 
 ## THE RESULT
 
-A dict of `cause`, `exit`, `signal`, and (without `-out`) `stdout`. `cause` is what deadman did: `exit` when the child died its own death, `stall`, `wall`, or the token a kill caller named. `exit` is the child's real exit code, mined from the reap rather than encoded in a sentinel like `timeout(1)`'s 124. `signal` names the signal when the child died by one, and stays separate so the exit code keeps its plain meaning. A run that needed the forced close forfeits the reap (exit 0, no signal); the cause still tells the story.
+A dict of `cause`, `exit`, `signal`, and (without `-out`) `stdout`. `cause` is what deadman did: `exit` when the child died its own death, `stall`, `wall`, or the token a kill caller named. `exit` is the child's real exit code, mined from the reap rather than encoded in a sentinel like `timeout(1)`'s 124. `signal` names the signal when the child died by one, and stays separate so the exit code keeps its plain meaning. A run that needed the forced close forfeits the reap (exit 0, no signal); the recorded cause still says which detector fired.
 
 ## THE KILL
 
-setsid makes the child a process-group lead, so `kill -TERM -- -<pid>` reaches the grandchildren; a positive-pid TERM behind it covers a host where setsid forks. The `--` escort matters more than it looks: `kill(1)` reads an unescorted `-<pid>` as `-1`, a broadcast to every process you own, which logs you out of your desktop with nothing to say why. deadman carries the escort, and its test suite keeps a bystander process alive across a group kill to prove it stays carried.
+setsid makes the child a process-group lead, so `kill -TERM -- -<pid>` reaches the grandchildren; a positive-pid TERM behind it covers a host where setsid forks. The `--` escort matters more than it looks: `kill(1)` reads an unescorted `-<pid>` as `-1`, a broadcast to every process the caller's user owns - enough to end a desktop session with nothing in any log to say why. The escort is carried here, and the test suite keeps a bystander process alive across a group kill so it stays carried.
 
 Without setsid on PATH (`gsetsid` is probed too, for hosts whose coreutils carry the g prefix), the same pipe path runs but kills reach the lead pid only; descendants the lead spawned survive as orphans. Detectors, causes, and exit codes are unaffected.
 
-## CAVEATS
+## LIMITS
 
 The `-stdin` write is blocking and runs before the event loop starts, so a child that never reads its stdin while the input exceeds the pipe buffer holds the launch until it does; the wall cannot fire during that window. A lead process that closes its own stdout by hand and lives on delays the reap until it exits; with a stall or wall armed it is killed long before that matters. Progress means lines: a child that emits one endless unterminated line reads as silent to the stall clock.
 

@@ -99,12 +99,18 @@ if {$groupable} {
 set polls 0
 proc pollcb {h} {
     incr ::polls
-    if {$::polls >= 2} { deadman::kill $h budget }
+    if {$::polls >= 2} { deadman::kill $h quota }
 }
 set r [deadman::run {sh -c {sleep 30}} -stall 150 -poll {100 pollcb} \
     -grace 300]
-check poll-cause  budget [dict get $r cause]
+check poll-cause  quota [dict get $r cause]
 check poll-called 2 $polls
+
+# -- -err stdout merges the child's stderr into the watched stream -------------
+
+set r [deadman::run {sh -c {echo out; echo err >&2}} -err stdout]
+check err-merged 1 [expr {[string match "*out*" [dict get $r stdout]] \
+    && [string match "*err*" [dict get $r stdout]]}]
 
 # -- stdin is fed whole, as UTF-8, and comes back through stdout ---------------
 

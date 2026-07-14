@@ -18,13 +18,14 @@ package provide deadman 1.0
 #   set res [deadman::run {sh -c make} -stall 60000 -wall 600000]
 #   # -> {cause exit exit 0 signal {} stdout {...}}
 #
-#   set h [deadman::run $argv -out run.log -poll {30000 checkBudget} \
+#   set h [deadman::run $argv -out run.log -poll {30000 checkQuota} \
 #              -done ranOut]
-#   proc checkBudget {h} { if {[overspent]} { deadman::kill $h budget } }
-#   proc ranOut {res}    { ...same result dict, appended to the cmd... }
+#   proc checkQuota {h} { if {[quotaGone]} { deadman::kill $h quota } }
+#   proc ranOut {res}   { ...same result dict, appended to the cmd... }
 #
-#   deadman::run argv ?-stdin s? ?-out chan-or-file? ?-err file? ?-line cmd?
-#       ?-stall ms? ?-wall ms? ?-poll {ms cmd}? ?-grace ms? ?-done cmd?
+#   deadman::run argv ?-stdin s? ?-out chan-or-file? ?-err file-or-stdout?
+#       ?-line cmd? ?-stall ms? ?-wall ms? ?-poll {ms cmd}? ?-grace ms?
+#       ?-done cmd?
 #     Run a command. Sync without -done: an internal vwait runs the event
 #     loop until the child is reaped, then returns the result dict. With
 #     -done: returns a handle at once and invokes cmd at completion with
@@ -159,7 +160,11 @@ proc ::deadman::run {argv args} {
     set pipeline [list |]
     if {$wrap ne ""} { lappend pipeline {*}$wrap }
     lappend pipeline {*}$argv
-    if {[dict get $opt -err] ne ""} {
+    if {[dict get $opt -err] eq "stdout"} {
+        # Merge stderr into the watched stream (a file named stdout wants
+        # a ./ prefix).
+        lappend pipeline 2>@1
+    } elseif {[dict get $opt -err] ne ""} {
         lappend pipeline 2> [dict get $opt -err]
     } else {
         lappend pipeline 2>@ stderr

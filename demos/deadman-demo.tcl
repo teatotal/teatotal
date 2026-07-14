@@ -1,9 +1,9 @@
 #!/usr/bin/env tclsh9.0
-# A standalone demo of deadman: three fates for a child process. A clean run
-# returns its output and exit code; a child gone silent is killed by the
-# stall clock; a child that traps TERM is walked up the escalation ladder to
-# KILL. Each verdict is the same dict: cause, exit, signal, stdout. It loads
-# only the deadman module - no Tk.
+# A standalone demo of deadman: a child that exits cleanly, a child gone
+# silent (the stall clock kills its process group), and a child that traps
+# TERM (the grace expires and KILL finishes it). Each verdict is the same
+# dict: cause, exit, signal, stdout. It loads only the deadman module - no
+# Tk.
 #
 # Run it:   tclsh9.0 demos/deadman-demo.tcl
 
@@ -33,5 +33,3 @@ verdict stall [deadman::run {sh -c {echo "starting..."; sleep 60}} \
 puts "3. A child that traps TERM: the grace expires and KILL finishes it."
 verdict trap [deadman::run {sh -c {trap "" TERM; echo "can't stop me"; sleep 60}} \
     -stall 500 -grace 500]
-
-puts "Sixty-second sleeps, three verdicts, and you waited about two seconds."

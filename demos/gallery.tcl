@@ -24,6 +24,7 @@ package require leash
 package require streamtree
 package require streamdoc
 package require tkdown
+package require deadman
 
 # ---- the demos: adding one is one entry here -------------------------------
 # file is under demos/, page is the module's man page at the repository root,
@@ -160,10 +161,9 @@ oo::class create RunLog {
 # ---- the gallery ------------------------------------------------------------
 oo::class create Gallery {
     mixin leash
-    variable Rows Log Reader Selected Chan Lines Serial
+    variable Rows Log Reader Selected Run Lines
     constructor {start} {
-        set Serial 0
-        set Chan ""
+        set Run ""
         ttk::frame .bar
         pack .bar -side top -fill x
         ttk::button .bar.run -text Run -command [list [self] run]
@@ -234,16 +234,14 @@ oo::class create Gallery {
         $Reader see 1.0
     }
 
-    # Launch the selected demo as a subprocess and stream its output into a
-    # fresh streamdoc region. One run at a time: streamdoc keeps one region
-    # open, so Run rests until the child exits.
+    # Launch the selected demo as a deadman-watched subprocess and stream
+    # its output into a fresh streamdoc region. One run at a time:
+    # streamdoc keeps one region open, so Run rests until the child exits.
     method run {} {
         set d [dict get $::DEMOS $Selected]
         set interp [expr {[dict get $d kind] eq "Tk" ? "wish9.0" : "tclsh9.0"}]
         set cmd [list $interp [file join $::HERE [dict get $d file]] \
-            {*}[dict get $d runargs] 2>@1]
-        set Chan [open |$cmd r]
-        chan configure $Chan -blocking 0
+            {*}[dict get $d runargs]]
         set Lines 0
         $Log batch {
             $Log region_open [dict create]
@@ -251,43 +249,28 @@ oo::class create Gallery {
             $Log emit $m "▾ $Selected · started [clock format [clock seconds] -format %T]\n" hdr
             $Log append_close $m
         }
-        # The drain is a leash coroutine: it lives in this object's namespace
-        # and dies with it, and the destructor closes the channel first, so a
-        # torn-down gallery leaves no readable event to fire.
-        chan event $Chan readable [my coro drain[incr Serial] \
-            [namespace which my] Drain]
+        # The callbacks land through this object's instance-namespace `my`;
+        # the destructor cancels the run, so a torn-down gallery leaves no
+        # callback to fire.
+        set Run [deadman::run $cmd -err stdout \
+            -line [list [namespace which my] Line] \
+            -done [list [namespace which my] Finish]]
         .bar.run state disabled
     }
-    method Drain {} {
-        yield
-        while 1 {
-            if {[gets $Chan line] >= 0} {
-                $Log batch {
-                    set m [$Log append_open]
-                    $Log emit $m "  $line\n" {}
-                    $Log append_close $m
-                }
-                incr Lines
-                continue
-            }
-            if {[chan eof $Chan]} break
-            yield
+    method Line {line} {
+        $Log batch {
+            set m [$Log append_open]
+            $Log emit $m "  $line\n" {}
+            $Log append_close $m
         }
-        my Finish
+        incr Lines
     }
-    method Finish {} {
-        chan event $Chan readable {}
-        chan configure $Chan -blocking 1
-        set status 0
-        if {[catch {close $Chan} msg opts]} {
-            set code [dict get $opts -errorcode]
-            switch [lindex $code 0] {
-                CHILDSTATUS { set status [lindex $code 2] }
-                CHILDKILLED { set status "killed ([lindex $code 3])" }
-                default     { set status $msg }
-            }
+    method Finish {res} {
+        set status [dict get $res exit]
+        if {[dict get $res signal] ne ""} {
+            set status "killed ([dict get $res signal])"
         }
-        set Chan ""
+        set Run ""
         $Log batch {
             $Log payload_set [$Log live] [dict create status $status lines $Lines]
             $Log region_close
@@ -296,15 +279,11 @@ oo::class create Gallery {
     }
 
     # Closing the window mid-run kills the child rather than orphaning it: a
-    # demo window with no gallery behind it would linger headless. The kill
-    # ends the stream, the close reaps the process, and dropping the channel
-    # removes its readable event before leash deletes the drain coroutine.
+    # demo window with no gallery behind it would linger headless. cancel
+    # kills the child's whole group and fires no callbacks into the
+    # teardown.
     destructor {
-        if {$Chan ne ""} {
-            catch {chan event $Chan readable {}}
-            catch {exec kill {*}[pid $Chan]}
-            catch {close $Chan}
-        }
+        if {$Run ne ""} { deadman::cancel $Run }
     }
 }
 
