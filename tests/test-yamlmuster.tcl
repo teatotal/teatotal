@@ -1,5 +1,5 @@
 #!/usr/bin/env tclsh9.0
-# Tests for the yamlmuster module: every rule kind against a spar-shaped
+# Tests for the yamlmuster module: every rule kind against an approach-shaped
 # fixture, the cost account that proves partial validation, the policing
 # negatives that prove a rules file can only declare, and the edge cases
 # the man page commits to. The rulesets and data here are invented for the
