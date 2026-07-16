@@ -11,20 +11,19 @@ set HERE [file dirname [file normalize [info script]]]
 ::tcl::tm::path add [file dirname $HERE]
 package require jobpool
 
-# Two kinds of work, one proc each. Each sleeps in short beats, checking
-# its cancel sentinel between them, so a cancel lands within a beat
-# instead of at the end. heavy and light share one body through run_beats.
+# Two kinds of work, one proc each. Each sleeps in short beats and calls
+# checkpoint between them, so a cancel lands within a beat instead of at
+# the end; the verb reads the sentinel and carries the report home. The
+# pool seeds the verbs; a body picks them up with one namespace path line.
+# heavy and light share one body through run_beats.
 set WORKER {
+    namespace path ::jobpool::worker
     proc run_beats {job opts} {
         for {set i 0} {$i < [dict get $opts beats]} {incr i} {
-            if {[tsv::exists $::jobpool_tsv $job.cancel]} {
-                thread::send -async $::main_tid \
-                    [list $::pool on_cancelled $job]
-                return
-            }
-            after 200
+            checkpoint $job                 ;# a cancel or pause lands here
+            after 200                       ;# the blocking beat a thread is for
         }
-        thread::send -async $::main_tid [list $::pool on_done $job]
+        done $job "[dict get $opts beats] beats"
     }
     proc heavy {job opts} { run_beats $job $opts }
     proc light {job opts} { run_beats $job $opts }

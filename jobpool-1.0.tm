@@ -44,7 +44,7 @@ package provide jobpool 1.0
 #     jobs        the pool size: this many worker threads, pre-spawned.
 #     -init       the worker bootstrap, run once per worker interpreter.
 #     -log        a command prefix called with one string for each
-#                 dropped/out-of-order message (a diagnostic channel).
+#                 dropped/out-of-order report (a diagnostic channel).
 #     -logger     a logger(n) service name for the same diagnostics
 #                 (default "jobpool").
 #
@@ -83,17 +83,17 @@ package provide jobpool 1.0
 # cancel unwind is trapped in the injected `run` wrapper. However a body
 # ends, its slot is freed.
 #
-# THE MESSAGE SURFACE (worker thread -> pool, via thread::send -async)
+# THE REPORTING SURFACE (worker verb -> pool method, via thread::send -async)
 #
 # Each verb lands on a matching pool method, run on the pool's own thread.
-# State-changing messages are validated against the job's current state and
-# dropped (with a diagnostic) when they do not fit, so a message that
-# arrives after the job was cancelled cannot resurrect it.
+# State-changing reports are validated against the job's current state and
+# dropped (with a diagnostic) when they do not fit, so a report that arrives
+# after the job was cancelled cannot resurrect it.
 #
 #   on_phase on_progress on_rate_limited on_rate_limit_cleared
 #   on_paused on_resumed on_done on_failed on_cancelled
 #
-# A consumer with its own message kinds subclasses jobpool and adds the
+# A consumer with reports of its own subclasses jobpool and adds the
 # matching on_<name> methods; the inherited _fire and the _expect guards
 # are there to build them from.
 #
@@ -116,7 +116,7 @@ package provide jobpool 1.0
 #
 # job-state fires on every transition (job, new-state); the finer events
 # job-phase, job-progress, job-done, job-failed, job-paused, job-resumed,
-# job-rate-limited, job-rate-limit-cleared carry each message on. queue-
+# job-rate-limited, job-rate-limit-cleared carry each report on. queue-
 # paused/queue-resumed track the whole-queue hold; kind-held/kind-released
 # track a single kind; count-cap-reached fires when the launch budget runs
 # out. Either, both, or neither may be listening; the pool fires regardless.
@@ -445,7 +445,7 @@ oo::class create jobpool {
     # prune_missing - drop every job whose key is not in $valid_jobs. A
     # caller that recomputes the set of jobs it still wants uses this to
     # shed the rest in one call. Active jobs (running/paused/rate_limited)
-    # keep their state: they own a slot and will reach a terminal message on
+    # keep their state: they own a slot and will reach a terminal report on
     # their own. Only terminal or not-yet-posted jobs are collectable.
     method prune_missing {valid_jobs} {
         set valid [dict create]
@@ -481,7 +481,7 @@ oo::class create jobpool {
         my _try_post_next
     }
 
-    # ─── Worker → pool messages ──────────────────────────────────────
+    # ─── Worker verb → pool reports ──────────────────────────────────
 
     method on_phase {job phase} {
         if {![my _expect_active $job phase]} return
@@ -534,7 +534,7 @@ oo::class create jobpool {
 
     # _try_post_next - walk the queue in order, posting any job that clears
     # every admission control. State flips to running at post time, not on a
-    # later message, so the cap math reads straight from the state map and
+    # later report, so the cap math reads straight from the state map and
     # there is no queued/running gap to race. The controls fold in per job:
     # the lifetime count cap first (nothing more launches once it is hit),
     # then the global cap (stop and keep the tail), a held kind (announce
@@ -644,7 +644,7 @@ oo::class create jobpool {
         }
         return 1
     }
-    # _expect_active - an informational message is allowed in any
+    # _expect_active - an informational report is allowed in any
     # non-terminal state.
     method _expect_active {job mtype} {
         if {![dict exists $JobState $job]} {
