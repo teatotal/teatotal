@@ -90,7 +90,7 @@ Three admission controls sit in front of the launch, on the same kind axis as th
 
 ## THE EVENT STREAM
 
-**subscribe** *event cmd* runs *cmd* with the event's arguments appended on every fire. `job-state` fires on every transition as `job new-state`. The finer events carry each report's payload: `job-done` as `job result`, `job-failed` as `job reason`, `job-phase` as `job name`, `job-progress` as `job text`, `job-rate-limited` as `job until`, and `job-paused`, `job-resumed`, `job-rate-limit-cleared` as `job`. `queue-paused` and `queue-resumed` fire when the whole queue is held or released; `kind-held` and `kind-released` when one kind is; `count-cap-reached` when the spent budget first holds a job back. A batch run subscribes to `job-done` and collects; a supervisor subscribes to `job-state` and follows each transition. **subscribed** *event* tells whether an event has any listener.
+**subscribe** *event cmd* runs *cmd* with the event's arguments appended on every fire. `job-state` fires on every transition as `job new-state`. The finer events carry each report's payload: `job-done` as `job result`, `job-failed` as `job reason`, `job-phase` as `job name`, `job-progress` as `job text`, `job-rate-limited` as `job until`, and `job-paused`, `job-resumed`, `job-rate-limit-cleared` as `job`. `queue-paused` and `queue-resumed` fire when the whole queue is paused or resumed; `kind-held` and `kind-released` when one kind is held or released; `count-cap-reached` when the spent budget first holds a job back. A batch run subscribes to `job-done` and collects; a supervisor subscribes to `job-state` and follows each transition. **subscribed** *event* tells whether an event has any listener.
 
 ## CHOOSING BETWEEN THE TWINS
 

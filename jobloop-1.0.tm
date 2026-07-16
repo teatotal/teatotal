@@ -128,9 +128,10 @@ package provide jobloop 1.0
 # Written against Tcl 9. Copyright (c) 2025 Weiwu Zhang, MIT license.
 
 # The worker vocabulary. Each verb resolves the owning pool from the
-# process-global Owner dict, keyed by the running coroutine; RunJob sets and
-# clears that key around each body. The verbs are commands, not methods, so
-# a body in the calling interpreter picks them up with `namespace path`.
+# process-global Owner dict, keyed by the running coroutine; _start sets
+# that key before the coroutine is created, and RunJob clears it in its
+# finally. The verbs are commands, not methods, so a body in the calling
+# interpreter picks them up with `namespace path`.
 namespace eval ::jobloop {
     variable Owner
     if {![info exists Owner]} { set Owner [dict create] }
