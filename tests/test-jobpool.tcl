@@ -64,6 +64,9 @@ set WORKER {
     proc light {job opts} { fake_worker $job $opts }
     proc paced {job opts} { fake_worker $job $opts }
     proc free  {job opts} { fake_worker $job $opts }
+    proc capped {job opts} { fake_worker $job $opts }
+    proc other  {job opts} { fake_worker $job $opts }
+    proc held   {job opts} { fake_worker $job $opts }
     proc fake_worker {job opts} {
         foreach step [dict get $opts plan] {
             switch -- [lindex $step 0] {
@@ -235,6 +238,97 @@ $p resume_queue
 check gate-aborted cancelled [$p state skip]
 wait_terminal $p keep 2000
 check gate-admitted done [$p state keep]
+$p destroy
+
+# -- the gate defers a job: queued, not cancelled, posted once admitted ------
+
+set p [new_pool 2]
+set ::admit_d 0
+$p set_pre_launch_callback {apply {{job kind idx total} {
+    expr {$job eq "d1" && !$::admit_d ? "defer" : ""}
+}}}
+$p enqueue d1 fake_worker {plan {{sleep 20}}}
+pump 40
+check defer-queued 1 [expr {"d1" in [$p queued_jobs]}]
+check defer-not-cancelled queued [$p state d1]
+set ::admit_d 1
+$p enqueue t1 fake_worker {plan {{sleep 20}}}   ;# this walk reconsiders d1
+wait_terminal $p d1
+check defer-launched done [$p state d1]
+$p destroy
+
+# -- defer and abort part ways: one waits, one dies, the third runs ----------
+
+set p [new_pool 3]
+$p set_pre_launch_callback {apply {{job kind idx total} {
+    switch -- $job {drop {return abort} hold {return defer} default {return ""}}
+}}}
+$p enqueue drop fake_worker {plan {{sleep 20}}}
+$p enqueue hold fake_worker {plan {{sleep 20}}}
+$p enqueue go   fake_worker {plan {{sleep 20}}}
+pump 60
+check dva-abort-cancelled cancelled [$p state drop]
+check dva-defer-queued queued [$p state hold]
+check dva-admit-launched 1 [expr {[$p state go] ni {queued cancelled}}]
+$p destroy
+
+# -- a later high-priority job jumps ahead of earlier same-kind queued work --
+
+set p [new_pool 1]
+$p enqueue lo1 heavy {plan {{sleep 40}}}             ;# runs, finishes soon
+$p enqueue lo2 heavy {plan {{sleep 150}}}            ;# queued
+$p enqueue hi  heavy {plan {{sleep 150}}} -priority 5
+wait_state $p lo1 running
+wait_state $p hi running 3000   ;# lo1 done -> the walk takes hi before lo2
+check prio-hi-first running [$p state hi]
+check prio-lo2-waits queued [$p state lo2]
+$p cancel lo2; wait_terminal $p hi 2000
+$p destroy
+
+# -- within one priority level the queue stays first-in first-out ------------
+
+set p [new_pool 1]
+$p enqueue lo1 heavy {plan {{sleep 40}}}
+$p enqueue a heavy {plan {{sleep 150}}} -priority 3
+$p enqueue b heavy {plan {{sleep 150}}} -priority 3
+wait_state $p lo1 running
+wait_state $p a running 3000
+check fifo-a-first running [$p state a]
+check fifo-b-waits queued [$p state b]
+$p cancel b; wait_terminal $p a 2000
+$p destroy
+
+# -- priority does not override the kind cap ---------------------------------
+
+set p [new_pool 3]
+$p set_kind_cap capped 1
+$p enqueue c1  capped {plan {{sleep 200}}}
+$p enqueue chi capped {plan {{sleep 200}}} -priority 9
+$p enqueue o1  other  {plan {{sleep 200}}}
+$p enqueue o2  other  {plan {{sleep 200}}}
+wait_state $p c1 running
+pump 60
+check prio-kindcap-held queued [$p state chi]
+check prio-kindcap-others 2 [running_among $p o1 o2]
+$p cancel chi
+foreach j {c1 o1 o2} { wait_terminal $p $j 3000 }
+$p destroy
+
+# -- priority does not override a hold ---------------------------------------
+
+set p [new_pool 3]
+$p hold_kind held
+$p enqueue hhi held  {plan {{sleep 200}}} -priority 9
+$p enqueue o1  other {plan {{sleep 200}}}
+$p enqueue o2  other {plan {{sleep 200}}}
+pump 60
+check prio-hold-held queued [$p state hhi]
+check prio-hold-others 2 [running_among $p o1 o2]
+$p release_kind held
+wait_state $p hhi running 2000
+check prio-hold-released running [$p state hhi]
+$p cancel hhi
+foreach j {o1 o2 hhi} { wait_terminal $p $j 3000 }
 $p destroy
 
 # -- the pacing floor spaces a kind; an unpaced kind is undelayed ------------

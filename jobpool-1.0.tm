@@ -264,10 +264,12 @@ oo::class create jobpool {
     }
 
     # set_pre_launch_callback - a synchronous admission gate fired just
-    # before each launch, as `{*}$cb $job $kind $idx $total`. Return "abort"
-    # to drop the job before any worker runs; anything else admits it. idx
-    # is the job's 1-based position among those enqueued and total the count
-    # so far, so an admitter can pace by position.
+    # before each launch, as `{*}$cb $job $kind $idx $total`. "abort" drops
+    # the job before any worker runs; "defer" leaves it queued for a later
+    # walk, which any enqueue, completion, release, resume, or pace re-drain
+    # triggers; anything else admits it. idx is the job's 1-based position
+    # among those enqueued and total the count so far, so an admitter can
+    # pace by position.
     method set_pre_launch_callback {cb} { set PreLaunchCallback $cb }
 
     # ─── Accessors ───────────────────────────────────────────────────
@@ -362,21 +364,50 @@ oo::class create jobpool {
 
     # enqueue - register a job. kind names the proc that runs it and is the
     # axis the per-kind cap, pacing, and holds work on; opts is the dict
-    # that proc receives.
-    method enqueue {job kind opts} {
+    # that proc receives. -priority (an integer, default 0) orders the queue
+    # high-first, first-in first-out within a level; the physical controls
+    # still gate each launch.
+    method enqueue {job kind opts args} {
         if {[dict exists $JobState $job]} {
             my _log "enqueue: job $job already present (state [dict get $JobState $job]); ignoring"
             return
+        }
+        set priority 0
+        foreach {opt val} $args {
+            switch -- $opt {
+                -priority { set priority $val }
+                default   { error "enqueue: unknown option $opt" }
+            }
+        }
+        if {![string is integer -strict $priority]} {
+            error "enqueue: -priority must be an integer, got '$priority'"
         }
         dict set JobState $job queued
         dict set JobMeta  $job [dict create \
             kind       $kind \
             opts       $opts \
+            priority   $priority \
             posted_at  [clock milliseconds] \
             started_at ""]
-        lappend Queue $job
+        my _queue_insert $job
         my _fire job-state $job queued
         my _try_post_next
+    }
+
+    # _queue_insert - place a job in the queue by priority then arrival: a
+    # higher priority sits ahead, equal priorities keep first-in first-out.
+    # The walk reads the queue in this order, so priority shapes which job
+    # the physical controls weigh first, not whether they apply.
+    method _queue_insert {job} {
+        set p [dict get $JobMeta $job priority]
+        set at [llength $Queue]
+        for {set i 0} {$i < [llength $Queue]} {incr i} {
+            if {[dict get $JobMeta [lindex $Queue $i] priority] < $p} {
+                set at $i
+                break
+            }
+        }
+        set Queue [linsert $Queue $at $job]
     }
 
     # cancel - a queued job drops before it posts; a running job gets the
@@ -446,7 +477,7 @@ oo::class create jobpool {
         catch {tsv::unset $Sentinels $job.pause}
         dict set JobMeta $job started_at ""
         my _set_state $job queued
-        lappend Queue $job
+        my _queue_insert $job
         my _try_post_next
     }
 
@@ -577,6 +608,9 @@ oo::class create jobpool {
                 catch {set verdict [{*}$PreLaunchCallback $job $kind $idx $total]}
                 if {$verdict eq "abort"} {
                     my _set_state $job cancelled
+                    continue
+                } elseif {$verdict eq "defer"} {
+                    lappend new_queue $job
                     continue
                 }
             }

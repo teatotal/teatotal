@@ -77,11 +77,14 @@ proc w_ratelimit {job opts} {
     done $job cleared
 }
 # kind-named bodies (an unregistered kind runs the command of its own name)
-proc heavy {job opts} { w_beats $job $opts }
-proc light {job opts} { w_beats $job $opts }
-proc paced {job opts} { w_beats $job $opts }
-proc free  {job opts} { w_beats $job $opts }
-proc slow  {job opts} { w_beats $job $opts }
+proc heavy  {job opts} { w_beats $job $opts }
+proc light  {job opts} { w_beats $job $opts }
+proc paced  {job opts} { w_beats $job $opts }
+proc free   {job opts} { w_beats $job $opts }
+proc slow   {job opts} { w_beats $job $opts }
+proc capped {job opts} { w_beats $job $opts }
+proc other  {job opts} { w_beats $job $opts }
+proc held   {job opts} { w_beats $job $opts }
 
 proc new_loop {n} { return [jobloop new $n] }
 
@@ -307,6 +310,97 @@ $loop resume_queue
 check gate-aborted cancelled [$loop state skip]
 wait_terminal $loop keep
 check gate-admitted done [$loop state keep]
+$loop destroy
+
+# -- the gate defers a job: queued, not cancelled, launched once admitted ----
+
+set loop [new_loop 2]
+set ::admit_d 0
+$loop set_pre_launch_callback {apply {{job kind idx total} {
+    expr {$job eq "d1" && !$::admit_d ? "defer" : ""}
+}}}
+$loop enqueue d1 w_beats {beats 2 beat 20}
+pump 40
+check defer-queued 1 [expr {"d1" in [$loop queued_jobs]}]
+check defer-not-cancelled queued [$loop state d1]
+set ::admit_d 1
+$loop enqueue t1 w_beats {beats 1 beat 20}   ;# this walk reconsiders d1
+wait_terminal $loop d1
+check defer-launched done [$loop state d1]
+$loop destroy
+
+# -- defer and abort part ways: one waits, one dies, the third runs ----------
+
+set loop [new_loop 3]
+$loop set_pre_launch_callback {apply {{job kind idx total} {
+    switch -- $job {drop {return abort} hold {return defer} default {return ""}}
+}}}
+$loop enqueue drop w_beats {beats 1 beat 20}
+$loop enqueue hold w_beats {beats 1 beat 20}
+$loop enqueue go   w_beats {beats 1 beat 20}
+pump 50
+check dva-abort-cancelled cancelled [$loop state drop]
+check dva-defer-queued queued [$loop state hold]
+check dva-admit-launched 1 [expr {[$loop state go] ni {queued cancelled}}]
+$loop destroy
+
+# -- a later high-priority job jumps ahead of earlier same-kind queued work --
+
+set loop [new_loop 1]
+$loop enqueue lo1 heavy {beats 2 beat 20}            ;# runs, finishes soon
+$loop enqueue lo2 heavy {beats 20 beat 25}           ;# queued
+$loop enqueue hi  heavy {beats 20 beat 25} -priority 5
+wait_state $loop lo1 running
+wait_state $loop hi running 3000   ;# lo1 done -> the walk takes hi before lo2
+check prio-hi-first running [$loop state hi]
+check prio-lo2-waits queued [$loop state lo2]
+$loop cancel hi; $loop cancel lo2; wait_terminal $loop hi
+$loop destroy
+
+# -- within one priority level the queue stays first-in first-out ------------
+
+set loop [new_loop 1]
+$loop enqueue lo1 heavy {beats 2 beat 20}
+$loop enqueue a heavy {beats 20 beat 25} -priority 3
+$loop enqueue b heavy {beats 20 beat 25} -priority 3
+wait_state $loop lo1 running
+wait_state $loop a running 3000
+check fifo-a-first running [$loop state a]
+check fifo-b-waits queued [$loop state b]
+$loop cancel a; $loop cancel b; wait_terminal $loop a
+$loop destroy
+
+# -- priority does not override the kind cap ---------------------------------
+
+set loop [new_loop 3]
+$loop set_kind_cap capped 1
+$loop enqueue c1  capped {beats 20 beat 25}
+$loop enqueue chi capped {beats 20 beat 25} -priority 9
+$loop enqueue o1  other  {beats 20 beat 25}
+$loop enqueue o2  other  {beats 20 beat 25}
+wait_state $loop c1 running
+pump 60
+check prio-kindcap-held queued [$loop state chi]
+check prio-kindcap-others 2 [running_among $loop o1 o2]
+$loop cancel chi; $loop cancel o1; $loop cancel o2; $loop cancel c1
+wait_terminal $loop c1
+$loop destroy
+
+# -- priority does not override a hold ---------------------------------------
+
+set loop [new_loop 3]
+$loop hold_kind held
+$loop enqueue hhi held  {beats 20 beat 25} -priority 9
+$loop enqueue o1  other {beats 20 beat 25}
+$loop enqueue o2  other {beats 20 beat 25}
+pump 60
+check prio-hold-held queued [$loop state hhi]
+check prio-hold-others 2 [running_among $loop o1 o2]
+$loop release_kind held
+wait_state $loop hhi running 2000
+check prio-hold-released running [$loop state hhi]
+$loop cancel hhi; $loop cancel o1; $loop cancel o2
+wait_terminal $loop hhi
 $loop destroy
 
 # -- an uncaught error lands the job failed, its message the reason ----------
