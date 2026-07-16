@@ -34,6 +34,7 @@ package require deadman
 | [streamdoc](streamdoc.md)   | Stream a line into a Tk text widget while someone reads it, or fold a section above them, and their scroll jumps; streamdoc brackets every mutation so the line they are on stays put. |
 | [streamtree](streamtree.md) | `ttk::treeview` cannot wrap a row, embed a widget in one, or take a streamed insert without the view jumping. This tree, drawn in a text widget under treeview's own vocabulary, can. |
 | [tkdown](tkdown.md)         | Chat and transcript bodies arrive as markdown, which a text widget shows as raw markers; tkdown paints the forms such bodies carry (fences, tables, headings, lists, emphasis) onto plain tags, the parse half Tk-free. |
+| [yamlmuster](yamlmuster.md) | A hand-grown validator for parsed YAML makes every caller pay for every check, and its rules files are code you have to trust. yamlmuster indexes rules by level, group, and severity for partial validation - you pay only for the checks you select, and `stats` shows the bill - and loads them through a policed interpreter whose whole command table is `level`/`child`/`rule`, so a rules file can only declare. Dict-in: your parser parses, yamlmuster validates, at a measured YAML 1.1 (tcllib yaml) compatibility level. |
 
 ## Demos
 
@@ -54,6 +55,7 @@ The gallery lists the demos, paints the selected module's man page into a readin
 - `demos/streamdoc-demo.tcl` - a streaming feed of foldable regions that never moves the line you are reading.
 - `demos/streamtree-demo.tcl` - a sortable, resizable, streaming tree drawn in one text widget.
 - `demos/tkdown-demo.tcl` - a markdown sampler pane; the font-size spinbox refits the table live.
+- `demos/yamlmuster-demo.tcl` - a campaign ruleset over clean and broken dicts, two partial passes with the bill each one paid, a hostile rules file refused at load (`tclsh9.0 demos/yamlmuster-demo.tcl`).
 
 ## Tests
 
