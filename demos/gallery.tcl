@@ -47,8 +47,6 @@ set DEMOS [dict create \
         runargs {} teaches "a worker pool that owns each job's lifecycle"] \
     jobloop    [dict create file jobloop-demo.tcl kind CLI page jobloop.md \
         runargs {} teaches "the same lifecycle on coroutines, no threads"] \
-    jobfeed    [dict create file jobfeed-demo.tcl kind CLI page jobfeed.md \
-        runargs {} teaches "the intake that feeds a job pool from a polled source"] \
     yamlmuster [dict create file yamlmuster-demo.tcl kind CLI page yamlmuster.md \
         runargs {} teaches "partial validation with a bill, rules that can only declare"] \
 ]
