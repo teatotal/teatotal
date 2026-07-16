@@ -470,7 +470,11 @@ oo::class create jobpool {
         foreach job $dropped {
             dict unset JobState $job
             catch {dict unset JobMeta  $job}
-            catch {dict unset PostId $job}
+            # Reap, not just forget: a dropped job may still hold an unretrieved
+            # tpool result (a completion that pruned before its own report, or a
+            # cancel routed through a caller that prunes on the state event), so
+            # get it here rather than leak the record.
+            my _reap_post $job
             set idx [lsearch -exact $Queue $job]
             if {$idx >= 0} { set Queue [lreplace $Queue $idx $idx] }
             catch {tsv::unset $Sentinels $job.cancel}
@@ -505,12 +509,14 @@ oo::class create jobpool {
     method on_done {job {result {}}} {
         if {![my _expect $job done {running paused rate_limited}]} return
         my _set_state $job done
+        my _reap_post $job
         my _fire job-done $job $result
         my _try_post_next
     }
     method on_failed {job reason} {
         if {![my _expect $job failed {running paused rate_limited}]} return
         my _set_state $job failed
+        my _reap_post $job
         my _fire job-failed $job $reason
         my _try_post_next
     }
@@ -520,6 +526,7 @@ oo::class create jobpool {
         # than strand the job in rate_limited with the report refused.
         if {![my _expect $job cancelled {running paused rate_limited}]} return
         my _set_state $job cancelled
+        my _reap_post $job
         catch {tsv::unset $Sentinels $job.cancel}
         my _try_post_next
     }
@@ -672,5 +679,16 @@ oo::class create jobpool {
     method _log {msg} {
         catch {${LogService}::warn $msg}
         if {$LogCallback ne ""} { {*}$LogCallback "jobpool: $msg" }
+    }
+
+    # _reap_post - retrieve and discard the worker's tpool result so the thread
+    # pool does not keep one result record per finished job for the pool's whole
+    # life. The real result rode home on the worker's report (thread::send); the
+    # run has returned or is about to, so the get does not block meaningfully.
+    method _reap_post {job} {
+        if {[dict exists $PostId $job]} {
+            catch {tpool::get $Pool [dict get $PostId $job]}
+            dict unset PostId $job
+        }
     }
 }

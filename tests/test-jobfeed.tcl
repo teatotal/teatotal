@@ -47,13 +47,22 @@ proc source_cb {callback} { {*}$callback $::rows }
 # in for one.
 oo::class create TestFeed {
     superclass jobfeed
-    variable Admit Seen Replies
+    variable Admit Seen Replies Abort Clobber
     method admit {v} { set Admit $v }
+    method abortnext {} { set Abort 1 }          ;# gate aborts the next launch (F1)
+    method clobbernext {} { set Clobber 1 }      ;# classifyOutcome returns clobbering extra (F4)
     method seen {} { return [expr {[info exists Seen] ? $Seen : {}}] }
     method replies {} { return [expr {[info exists Replies] ? $Replies : {}}] }
     method gate {job kind} {
+        if {[info exists Abort] && $Abort} { set Abort 0; return abort }
         if {[info exists Admit] && !$Admit} { return defer }
         return ""
+    }
+    method classifyOutcome {item line} {
+        if {[info exists Clobber] && $Clobber} {
+            return [list done "d" [dict create status OVERRIDDEN id ZZZ mine 1]]
+        }
+        return [next $item $line]
     }
     method onOutcome {item status detail} {
         lappend Seen "[dict get $item group]:[dict get $item id]=$status"
@@ -99,7 +108,9 @@ check gate-no-launch     "0"      [llength [$pool active_jobs]]
 $feed admit 1
 $feed drain
 drain
-check gate-admits-after "done" [$pool state AI:9]
+# reapCore prunes the pool's terminal record (F3), so the completed outcome is
+# read from the feed's history rather than the pool's (now absent) state.
+check gate-admits-after "done" [dict get [$feed history] AI:9 status]
 $feed destroy
 $pool destroy
 
@@ -214,6 +225,93 @@ $feed subscribe [list apply {{e d} { if {$e eq "pull-skip"} { incr ::skips } }}]
 $feed pull
 check empty-source-skip      1 $::skips
 check empty-source-heartbeat 1 [expr {[$feed nextPoll] ne ""}]
+$feed destroy
+$pool destroy
+
+# ── F1: a gate 'abort' cancels the launch; the item leaves Items and reruns ──
+
+set pool [jobloop new 8]
+set feed [TestFeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+$feed abortnext
+$feed enqueue MM 2 work 0
+drain
+check f1-abort-leaves-items "" [$feed workLive MM 2]
+set ::ran {}
+$feed onWorkQueue [list [dict create group MM id 2 poolkind work]]
+drain
+check f1-abort-reruns 1 [expr {"MM:2" in $::ran}]
+$feed destroy
+$pool destroy
+
+# ── F1: a $pool cancel (the deadline recipe) reaps the item; the id reruns ───
+
+set pool [jobloop new 8]
+$pool hold_kind work
+set feed [jobfeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+$feed enqueue KK 1 work 0
+drain
+$pool cancel KK:1
+drain
+check f1-cancel-leaves-items "" [$feed workLive KK 1]
+$pool release_kind work
+set ::ran {}
+$feed inject KK 1 work
+drain
+check f1-cancel-reruns 1 [expr {"KK:1" in $::ran}]
+$feed destroy
+$pool destroy
+
+# ── F3: reapCore prunes the pool; an inject-only feed does not grow all_jobs ──
+
+set pool [jobloop new 8]
+set feed [jobfeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+for {set i 1} {$i <= 12} {incr i} { $feed inject GG $i work; drain }
+check f3-items-empty  0  [llength [$feed job]]
+check f3-history-full 12 [dict size [$feed history]]
+check f3-pool-pruned  0  [llength [$pool all_jobs]]
+$feed destroy
+$pool destroy
+
+# ── F4: classifyOutcome extra cannot clobber the canonical history fields ────
+
+set pool [jobloop new 8]
+set feed [TestFeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+$feed clobbernext
+$feed enqueue AA 5 work 0
+drain
+set row [dict get [$feed history] AA:5]
+check f4-core-status-wins done [dict get $row status]
+check f4-core-id-wins      5   [dict get $row id]
+check f4-extra-kept        1   [dict get $row mine]
+$feed destroy
+$pool destroy
+
+# ── F5: drain (via inject) does not lift a deliberate pause_queue ────────────
+
+set pool [jobloop new 8]
+set feed [jobfeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+$pool pause_queue
+$feed inject PP 1 work                       ;# inject calls drain internally
+check f5-pause-held 1 [$pool is_queue_paused]
+$feed destroy
+$pool destroy
+
+# ── F6: consumer opts cannot clobber the reserved item fields ────────────────
+
+set pool [jobloop new 8]
+$pool hold_kind work
+set feed [jobfeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+$feed enqueue RR 7 work 0 [dict create group HIJACK id 999 poolkind evil mine 1]
+set jr [lindex [$feed job] 0]
+check f6-group-reserved    RR   [dict get $jr group]
+check f6-id-reserved       7    [dict get $jr id]
+check f6-poolkind-reserved work [dict get $jr poolkind]
 $feed destroy
 $pool destroy
 

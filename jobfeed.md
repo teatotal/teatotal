@@ -35,6 +35,8 @@ Every work item has an identity, a *(group, id)* pair. *group* names a class of 
 
 A **delivered** item is a new run every time. A per-identity sequence mints it its own key `group:id#N`, its own queue entry, and its own history row, so successive deliveries of one identity read apart on a board instead of folding together. **inject** delivers one. If the identity is already live it promotes a queued polled item in place, since the source's row and the person's ask are one item rather than two, or it answers *duplicate* for one already running. Otherwise it mints the delivered run. Delivered work enqueues at priority 1, ahead of polled work.
 
+Because the delivered key appends `#N`, an *id* ending in `#` followed by digits can collide. A polled item with id `9#1` keys `group:9#1`, which is also the first delivered run of id `9`. Plain identifiers such as numbers, slugs, or addresses avoid that shape. A source that can emit `#`-suffixed ids should strip or escape them before enqueue.
+
 ## THE WORKER AND THE DISPATCH
 
 The pool runs each job through the feed's **jobWorker**, registered with the pool as `[list $feed jobWorker]` for whichever kinds the feed uses. jobWorker calls the caller's *dispatch* command prefix once and stashes the one result line it returns on the job. The pool's `job-done` then drives **reapCore**, which reads that line back. The dispatch is whatever runs the actual work and returns a result line, JSON by default so **classifyOutcome** can read its status. A dispatch that throws unwinds to the pool's failure path and is reaped as an error, its message the detail.

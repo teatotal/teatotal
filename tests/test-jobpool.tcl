@@ -484,6 +484,24 @@ check nodiag-both-done 2 [done_among $p j1 j2]
 check nodiag-zero-log 0 [llength $::difflog]
 $p destroy
 
+# -- F2: each terminal report reaps the tpool result record (PostId drains) ---
+# The Thread pool keeps one result record per posted job until it is retrieved;
+# jobpool now retrieves and drops it on every terminal report, so its PostId map
+# (a proxy for the retained records, since RSS is not portable to assert) does
+# not grow across a run of many jobs.
+
+set F2 { namespace path ::jobpool::worker
+         proc noop {job opts} { done $job "" } }
+set p [jobpool new 4 -init $F2]
+set ::f2done 0
+$p subscribe job-done [list apply {{j r} { incr ::f2done }}]
+for {set i 0} {$i < 60} {incr i} { $p enqueue f$i noop {} }
+wait_for {expr {$::f2done >= 60}}
+proc f2_postid {p} { return [dict size [set [info object namespace $p]::PostId]] }
+wait_for {expr {[f2_postid $p] == 0}}
+check f2-postid-drained 0 [f2_postid $p]
+$p destroy
+
 puts "----"
 if {$fails} { puts "FAILED ($fails)" } else { puts PASS }
 exit $fails

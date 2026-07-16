@@ -140,10 +140,14 @@ oo::class create jobfeed {
         set PollAfter ""; set NextPoll ""
         set WorkList {}
         # Wire the pool: the feed's gate is its pre-launch admission callback,
-        # and its reap fires off the pool's own job-done / job-failed.
+        # and its reap fires off the pool's own job-done / job-failed. A
+        # cancelled job fires neither of those (cancel is observable only as a
+        # job-state transition), so job-state is watched too, for the one
+        # terminal the reap would otherwise miss.
         $Pool set_pre_launch_callback [list [self] gate]
         $Pool subscribe job-done   [list [self] onPoolDone]
         $Pool subscribe job-failed [list [self] onPoolFailed]
+        $Pool subscribe job-state  [list [self] onPoolState]
     }
 
     destructor {
@@ -239,9 +243,13 @@ oo::class create jobfeed {
             if {[my workLive $group $id] ne ""} { return "" }
             set key "$group:$id"
         }
-        set item [dict merge [dict create \
-            key $key group $group id $id poolkind $poolkind delivered $delivered \
-            reply "" origin "" line "" ts [clock seconds]] $opts]
+        # reply/origin default first so a consumer's opts may set them; the
+        # structural core folds in LAST so opts cannot clobber key/group/id/
+        # poolkind/delivered/line/ts.
+        set item [dict merge \
+            [dict create reply "" origin ""] $opts \
+            [dict create key $key group $group id $id poolkind $poolkind \
+                delivered $delivered line "" ts [clock seconds]]]
         dict set Items $key $item
         # A delivery announces itself before the pool can launch it, so an
         # observer sees job-inject ahead of job-start; a polled row is silent.
@@ -318,11 +326,14 @@ oo::class create jobfeed {
 
     # ─── Draining ────────────────────────────────────────────────────
 
-    # drain - nudge the pool to re-weigh its queue. The pool re-walks on its
-    # own after enqueue, completion, hold release and pace; a policy change
-    # (a widened scope, a cleared budget) has no such trigger of its own, so
-    # those knobs call this.
-    method drain {} { $Pool resume_queue }
+    # drain - nudge the pool to re-weigh its queue, via resume_queue. The pool
+    # re-walks on its own after enqueue, completion, hold release and pace; a
+    # policy change (a widened scope, a cleared budget) has no such trigger of
+    # its own, so those knobs call this. But resume_queue also lifts a paused
+    # queue, so drain skips calling it while the pause is deliberate (a paused
+    # queue launches nothing to re-weigh anyway); the caller's own resume_queue
+    # re-walks when it later lifts the pause.
+    method drain {} { if {![$Pool is_queue_paused]} { $Pool resume_queue } }
 
     # ─── The worker and the reap ─────────────────────────────────────
 
@@ -352,6 +363,18 @@ oo::class create jobfeed {
         my reapCore $job "{\"status\":\"error\",\"detail\":[jobfeed::_jstr $reason]}"
     }
 
+    # onPoolState - the pool's state stream fires job-state for every transition;
+    # the only terminal it does not also fire a job-done/job-failed for is
+    # cancelled (the gate's abort verdict, or a `$pool cancel $key` per-job
+    # deadline). Reap a cancelled item like any completion so it leaves Items and
+    # its (group, id) can run again, rather than staying a ghost that workLive
+    # keeps reporting live and inject keeps answering as a duplicate.
+    method onPoolState {job state} {
+        if {$state eq "cancelled" && [dict exists $Items $job]} {
+            my reapCore $job "{\"status\":\"cancelled\",\"detail\":\"cancelled\"}"
+        }
+    }
+
     # reapCore - the single completion point for every job: classify the
     # result line, act on the outcome, retain a history row, answer a parked
     # request, and emit job-done. The pool has freed the slot and re-walks
@@ -360,14 +383,20 @@ oo::class create jobfeed {
         if {![dict exists $Items $key]} return
         set item [dict get $Items $key]
         dict unset Items $key
+        # Drop the pool's now-terminal record for this key. Delivered keys
+        # (group:id#N) are unique and never re-enqueued, so without this a
+        # pure-inject feed would grow the pool's job map without bound.
+        $Pool prune_missing [dict keys $Items]
         set line [string trim $line]
         if {$line eq ""} { set line "{\"status\":\"error\",\"detail\":\"job produced no result\"}" }
         lassign [my classifyOutcome $item $line] status detail extra
         my onOutcome $item $status $detail
-        dict set History $key [dict merge [dict create \
+        # extra folds in FIRST so the canonical fields win: a consumer's extra
+        # key named status/id/group/detail/origin/ts adds nothing over the core.
+        dict set History $key [dict merge $extra [dict create \
             group [dict get $item group] id [dict get $item id] \
             status $status detail $detail \
-            origin [jobfeed::_dget $item origin] ts [clock seconds]] $extra]
+            origin [jobfeed::_dget $item origin] ts [clock seconds]]]
         my emit job-done "$key $line"
         set reply [jobfeed::_dget $item reply]
         if {$reply ne ""} { my reply $reply $line }
