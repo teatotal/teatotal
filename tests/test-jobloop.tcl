@@ -76,6 +76,18 @@ proc w_ratelimit {job opts} {
     after 15 [info coroutine]; yield
     done $job cleared
 }
+# enters rate_limited and stays there, checkpointing through the wait so a
+# cancel can land while the job holds its slot.
+proc w_rlhold {job opts} {
+    after 15 [info coroutine]; yield
+    rate_limited $job [expr {[clock milliseconds] + 10000}]
+    for {set i 0} {$i < 200} {incr i} {
+        after 15 [info coroutine]; yield
+        checkpoint $job
+    }
+    rate_limit_cleared $job
+    done $job cleared
+}
 # kind-named bodies (an unregistered kind runs the command of its own name)
 proc heavy  {job opts} { w_beats $job $opts }
 proc light  {job opts} { w_beats $job $opts }
@@ -563,6 +575,46 @@ proc strays_naming {ns} {
 $loop destroy
 check destroy-ns-empty 0 [llength [info commands ${ns}::*]]
 check destroy-no-stray-timers 0 [strays_naming $ns]
+
+# -- cancelling a rate_limited job frees its slot, does not strand it --------
+
+set loop [new_loop 1]
+$loop enqueue j1 w_rlhold {}
+wait_state $loop j1 rate_limited
+$loop cancel j1
+wait_terminal $loop j1
+check rlcancel-cancelled cancelled [$loop state j1]
+check rlcancel-slot-freed 0 [llength [$loop active_jobs]]
+$loop enqueue j2 w_beats {beats 1 beat 20}   ;# the freed slot takes a new job
+wait_terminal $loop j2
+check rlcancel-slot-reused done [$loop state j2]
+$loop destroy
+
+# -- a supervisor that resumes from its own job-paused handler is safe -------
+
+set loop [new_loop 1]
+$loop subscribe job-failed {apply {{job r} {set ::reentrant_fail $r}}}
+set ::reentrant_fail ""
+$loop subscribe job-paused [list apply {{loop job} { $loop resume_job $job }} $loop]
+$loop enqueue j1 w_beats {beats 20 beat 20}
+wait_state $loop j1 running
+$loop pause_job j1
+wait_terminal $loop j1
+check autoresume-done done [$loop state j1]
+check autoresume-not-failed "" $::reentrant_fail
+$loop destroy
+
+# -- a body that reports its own done draws no fallback diagnostic -----------
+
+set ::difflog {}
+set loop [jobloop new 2 -log [list apply {{acc m} {lappend ::difflog $m}} difflog]]
+$loop enqueue j1 w_beats {beats 1 beat 15 result r1}
+$loop enqueue j2 w_beats {beats 1 beat 15 result r2}
+wait_terminal $loop j1
+wait_terminal $loop j2
+check nodiag-both-done 2 [done_among $loop j1 j2]
+check nodiag-zero-log 0 [llength $::difflog]
+$loop destroy
 
 puts "----"
 if {$fails} { puts "FAILED ($fails)" } else { puts PASS }

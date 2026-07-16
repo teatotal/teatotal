@@ -112,8 +112,8 @@ package provide jobloop 1.0
 # job-phase, job-progress, job-done, job-failed, job-paused, job-resumed,
 # job-rate-limited, job-rate-limit-cleared carry each report on. queue-
 # paused/queue-resumed track the whole-queue hold; kind-held/kind-released
-# track a single kind; count-cap-reached fires when the launch budget runs
-# out.
+# track a single kind; count-cap-reached fires when the spent budget first
+# holds a job back.
 #
 # NOTES
 #
@@ -273,8 +273,8 @@ oo::class create jobloop {
     method set_kind_pace {kind ms} { dict set KindPace $kind $ms }
 
     # set_count_cap - stop launching after n launches in the pool's
-    # lifetime, firing count-cap-reached once when the budget runs out. 0
-    # lifts the cap. A fresh cap re-arms the one-shot announce.
+    # lifetime, firing count-cap-reached once, when the spent budget first
+    # holds a job back. 0 lifts the cap. A fresh cap re-arms the announce.
     method set_count_cap {n} {
         set CountCap $n
         set CountAnnounced 0
@@ -453,7 +453,10 @@ oo::class create jobloop {
         my _try_launch
     }
     method on_cancelled {job} {
-        if {![my _expect $job cancelled {running paused}]} return
+        # rate_limited is cancellable too: a job waiting out an external
+        # limit still checkpoints, and its cancel must free the slot rather
+        # than strand the job in rate_limited with the report refused.
+        if {![my _expect $job cancelled {running paused rate_limited}]} return
         my _set_state $job cancelled
         my _try_launch
     }
@@ -507,7 +510,15 @@ oo::class create jobloop {
     method _resume_coro {job} {
         if {![dict exists $Coros $job]} return
         set co [dict get $Coros $job]
-        if {[llength [info commands $co]]} { $co }
+        if {![llength [info commands $co]]} return
+        # A subscriber that resumes or cancels the job from within the report
+        # that fired inside this very coroutine would call a coroutine already
+        # on the stack. Defer to the next loop turn, by when it has parked.
+        if {[info coroutine] eq $co} {
+            my later 0 [list [namespace which my] _resume_coro $job]
+            return
+        }
+        $co
     }
 
     # _start - fired by the launch's 0 ms timer, off the queue walk so no
@@ -543,7 +554,10 @@ oo::class create jobloop {
                                  ? [dict get $Reg $kind] : $kind}]
             try {
                 {*}$cmdprefix $job $opts
-                my on_done $job
+                # The fallback done fires only for a body that reported none
+                # of its own, so a body that already reported draws no
+                # "dropping" diagnostic from the refused second report.
+                if {[my state $job] ni $Terminal} { my on_done $job }
             } trap {JOBLOOP CANCEL} {} {
             } on error {msg} {
                 my on_failed $job $msg

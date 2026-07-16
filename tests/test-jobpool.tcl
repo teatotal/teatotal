@@ -107,6 +107,18 @@ set WORKER {
     proc vphase  {job opts} { phase $job started; after 20; done $job ok }
     proc verror  {job opts} { after 20; error "boom-$job" }
     proc vnoterm {job opts} { after 20 }
+    # enters rate_limited and stays there, polling its cancel sentinel at a
+    # checkpoint through the wait so a cancel can land while it holds a slot.
+    proc rlhold {job opts} {
+        after 15
+        rate_limited $job [expr {[clock milliseconds] + 10000}]
+        for {set i 0} {$i < 400} {incr i} {
+            after 15
+            checkpoint $job
+        }
+        rate_limit_cleared $job
+        done $job cleared
+    }
 }
 proc new_pool {jobs} { return [jobpool new $jobs -init $::WORKER] }
 
@@ -444,6 +456,32 @@ set p [jobpool new 1 -init $WORKER -log [list apply {{acc msg} {
 }} logged]]
 $p on_phase ghost somephase
 check stale-refused 1 [expr {[string match "*phase for unknown job ghost*" $logged]}]
+$p destroy
+
+# -- cancelling a rate_limited job frees its slot, does not strand it --------
+
+set p [new_pool 1]
+$p enqueue j1 rlhold {}
+wait_state $p j1 rate_limited 3000
+$p cancel j1
+wait_terminal $p j1 3000
+check rlcancel-cancelled cancelled [$p state j1]
+check rlcancel-slot-freed 0 [llength [$p active_jobs]]
+$p enqueue j2 fake_worker {plan {{sleep 20}}}   ;# the freed slot takes a new job
+wait_terminal $p j2 2000
+check rlcancel-slot-reused done [$p state j2]
+$p destroy
+
+# -- a verb body that reports its own done draws no fallback diagnostic ------
+
+set ::difflog {}
+set p [jobpool new 2 -init $WORKER -log [list apply {{acc m} {lappend ::difflog $m}} difflog]]
+$p enqueue j1 vbeats {beats 1 beat 15 result r1}
+$p enqueue j2 vbeats {beats 1 beat 15 result r2}
+wait_terminal $p j1 2000
+wait_terminal $p j2 2000
+check nodiag-both-done 2 [done_among $p j1 j2]
+check nodiag-zero-log 0 [llength $::difflog]
 $p destroy
 
 puts "----"

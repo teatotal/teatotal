@@ -118,8 +118,8 @@ package provide jobpool 1.0
 # job-phase, job-progress, job-done, job-failed, job-paused, job-resumed,
 # job-rate-limited, job-rate-limit-cleared carry each report on. queue-
 # paused/queue-resumed track the whole-queue hold; kind-held/kind-released
-# track a single kind; count-cap-reached fires when the launch budget runs
-# out. Either, both, or neither may be listening; the pool fires regardless.
+# track a single kind; count-cap-reached fires when the spent budget first
+# holds a job back. Either, both, or neither may be listening; the pool fires regardless.
 #
 # Written against Tcl 9. Copyright (c) 2025 Weiwu Zhang, MIT license.
 
@@ -241,15 +241,28 @@ oo::class create jobpool {
             proc ::jobpool::worker::progress {job text} { _home on_progress $job $text }
             proc ::jobpool::worker::rate_limited {job until} { _home on_rate_limited $job $until }
             proc ::jobpool::worker::rate_limit_cleared {job} { _home on_rate_limit_cleared $job }
-            proc ::jobpool::worker::done {job {result {}}} { _home on_done $job $result }
-            proc ::jobpool::worker::failed {job reason} { _home on_failed $job $reason }
+            proc ::jobpool::worker::done {job {result {}}} {
+                set ::jobpool::worker::Reported($job) 1
+                _home on_done $job $result
+            }
+            proc ::jobpool::worker::failed {job reason} {
+                set ::jobpool::worker::Reported($job) 1
+                _home on_failed $job $reason
+            }
             proc ::jobpool::worker::run {cmdprefix job opts} {
                 try {
                     {*}$cmdprefix $job $opts
-                    done $job
+                    # The fallback done fires only for a body that reported
+                    # none of its own; the Reported flag it set otherwise
+                    # spares the pool a refused second report and its
+                    # "dropping" diagnostic. The cancel unwind takes the trap
+                    # below, never this fallback.
+                    if {![info exists ::jobpool::worker::Reported($job)]} { done $job }
                 } trap {JOBPOOL CANCEL} {} {
                 } on error {msg} {
                     failed $job $msg
+                } finally {
+                    catch {unset ::jobpool::worker::Reported($job)}
                 }
             }
         }
@@ -325,8 +338,8 @@ oo::class create jobpool {
     method set_kind_pace {kind ms} { dict set KindPace $kind $ms }
 
     # set_count_cap - stop launching after n launches in the pool's
-    # lifetime, firing count-cap-reached once when the budget runs out. 0
-    # lifts the cap. A fresh cap re-arms the one-shot announce.
+    # lifetime, firing count-cap-reached once, when the spent budget first
+    # holds a job back. 0 lifts the cap. A fresh cap re-arms the announce.
     method set_count_cap {n} {
         set CountCap $n
         set CountAnnounced 0
@@ -504,7 +517,10 @@ oo::class create jobpool {
         my _try_post_next
     }
     method on_cancelled {job} {
-        if {![my _expect $job cancelled {running paused}]} return
+        # rate_limited is cancellable too: a job waiting out an external
+        # limit still checkpoints, and its cancel must free the slot rather
+        # than strand the job in rate_limited with the report refused.
+        if {![my _expect $job cancelled {running paused rate_limited}]} return
         my _set_state $job cancelled
         catch {tsv::unset $Sentinels $job.cancel}
         my _try_post_next
