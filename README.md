@@ -45,6 +45,7 @@ wish9.0 demos/gallery.tcl
 The gallery lists the demos, paints the selected module's man page into a reading pane, runs a demo as a deadman-watched subprocess with its output streaming below, and shows its source - and is itself built from the module stock it demonstrates. Each demo also runs standalone:
 
 - `demos/deadman-demo.tcl` - a clean exit, a stall kill, and a TERM-trapper met with escalation; the same verdict dict for each.
+- `demos/jobloop-demo.tcl` - two kinds of waiting work on one event loop, a paced kind launching in visible gaps, one job cancelled mid-wait between beats.
 - `demos/jobpool-demo.tcl` - a batch through a two-slot pool, every state change printed, one job cancelled mid-run, one kind held to a single worker.
 - `demos/leash-demo.tcl` - counters whose timers die with their owner; destroy one card and the others keep counting.
 - `demos/ocmdline-demo.tcl` - a tea timer whose help and parser render from one option table (`tclsh9.0 demos/ocmdline-demo.tcl --help`).

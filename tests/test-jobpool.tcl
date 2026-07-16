@@ -40,6 +40,17 @@ proc wait_state {pool job st {ms 5000}} {
 proc wait_terminal {pool job {ms 5000}} {
     wait_for [list expr {[$pool state $job] in {done failed cancelled}}] $ms
 }
+proc pump {ms} { set ::t 0; after $ms {set ::t 1}; vwait ::t }
+proc running_among {pool args} {
+    set n 0
+    foreach j $args { if {[$pool state $j] eq "running"} { incr n } }
+    return $n
+}
+proc done_among {pool args} {
+    set n 0
+    foreach j $args { if {[$pool state $j] eq "done"} { incr n } }
+    return $n
+}
 
 # The worker: run a scripted plan of steps, checking its sentinels at the
 # points the plan names, and message the pool as it goes.
@@ -51,6 +62,8 @@ set WORKER {
     }
     proc heavy   {job opts} { fake_worker $job $opts }
     proc light {job opts} { fake_worker $job $opts }
+    proc paced {job opts} { fake_worker $job $opts }
+    proc free  {job opts} { fake_worker $job $opts }
     proc fake_worker {job opts} {
         foreach step [dict get $opts plan] {
             switch -- [lindex $step 0] {
@@ -75,6 +88,22 @@ set WORKER {
         }
         jp_msg on_done $job
     }
+    # Bodies written the intended way: the pool seeds the worker verbs, a
+    # `namespace path` line picks them up, and the body reports through
+    # them instead of hand-rolling thread::send. checkpoint reads the
+    # sentinels the verbs share with the pool.
+    namespace path ::jobpool::worker
+    proc vbeats {job opts} {
+        set beat [expr {[dict exists $opts beat] ? [dict get $opts beat] : 30}]
+        for {set i 0} {$i < [dict get $opts beats]} {incr i} {
+            after $beat
+            checkpoint $job
+        }
+        if {[dict exists $opts result]} { done $job [dict get $opts result] } else { done $job }
+    }
+    proc vphase  {job opts} { phase $job started; after 20; done $job ok }
+    proc verror  {job opts} { after 20; error "boom-$job" }
+    proc vnoterm {job opts} { after 20 }
 }
 proc new_pool {jobs} { return [jobpool new $jobs -init $::WORKER] }
 
@@ -91,7 +120,7 @@ $p destroy
 
 set p [new_pool 2]
 foreach r {r1 r2 r3 r4} { $p enqueue $r fake_worker {plan {{sleep 200}}} }
-check cap-posted 2 [$p posted_count]
+check cap-posted 2 [llength [$p active_jobs]]
 check cap-queued 2 [llength [$p queued_jobs]]
 foreach r {r1 r2 r3 r4} { wait_terminal $p $r 6000 }
 check cap-all-done 4 [llength [lmap r {r1 r2 r3 r4} {expr {[$p state $r] eq "done" ? $r : [continue]}}]]
@@ -163,7 +192,7 @@ set p [new_pool 1]
 $p enqueue r1 fake_worker {plan {{sleep 20} {hold 5 120} {sleep 20}}}
 wait_state $p r1 rate_limited 1000
 check held-state rate_limited [$p state r1]
-check held-holds-slot 1 [$p posted_count]
+check held-holds-slot 1 [llength [$p active_jobs]]
 wait_terminal $p r1 2000
 check held-cleared-done done [$p state r1]
 $p destroy
@@ -197,7 +226,7 @@ $p destroy
 
 set p [new_pool 2]
 $p pause_queue
-$p set_pre_post_callback {apply {{job kind idx total} {
+$p set_pre_launch_callback {apply {{job kind idx total} {
     expr {$job eq "skip" ? "abort" : ""}
 }}}
 $p enqueue keep fake_worker {plan {{sleep 20}}}
@@ -206,6 +235,111 @@ $p resume_queue
 check gate-aborted cancelled [$p state skip]
 wait_terminal $p keep 2000
 check gate-admitted done [$p state keep]
+$p destroy
+
+# -- the pacing floor spaces a kind; an unpaced kind is undelayed ------------
+
+set p [new_pool 4]
+$p set_kind_pace paced 300
+set ::plaunch [dict create]
+$p subscribe job-state {apply {{job st} {
+    if {$st eq "running"} { dict set ::plaunch $job [clock milliseconds] }
+}}}
+$p enqueue p1 paced {plan {{sleep 20}}}
+$p enqueue p2 paced {plan {{sleep 20}}}
+$p enqueue u1 free  {plan {{sleep 20}}}
+$p enqueue u2 free  {plan {{sleep 20}}}
+check pace-p2-waits queued [$p state p2]
+check pace-u1-now running [$p state u1]
+wait_state $p p2 running 2000
+set gap [expr {[dict get $::plaunch p2] - [dict get $::plaunch p1]}]
+check pace-floor 1 [expr {$gap >= 280}]
+foreach j {p1 p2 u1 u2} { wait_terminal $p $j }
+$p destroy
+
+# -- the count cap launches exactly n, and fires its event once --------------
+
+set p [new_pool 4]
+set ::cc 0
+$p subscribe count-cap-reached {apply {{} {incr ::cc}}}
+$p set_count_cap 2
+foreach j {a b c d} { $p enqueue $j fake_worker {plan {{sleep 25}}} }
+wait_terminal $p a; wait_terminal $p b
+check countcap-launched 2 [$p launched_count]
+check countcap-once 1 $::cc
+check countcap-c-held queued [$p state c]
+$p destroy
+
+# -- hold_kind announces once, keeps the kind back, release drains -----------
+
+set p [new_pool 4]
+set ::hev {}
+$p subscribe kind-held {apply {{kind} {lappend ::hev $kind}}}
+$p hold_kind heavy
+foreach j {h1 h2 h3} { $p enqueue $j heavy {plan {{sleep 20}}} }
+pump 60
+check hold-none-running 0 [running_among $p h1 h2 h3]
+check hold-is-held 1 [$p is_kind_held heavy]
+check hold-announce-once 1 [llength $::hev]
+$p release_kind heavy
+foreach j {h1 h2 h3} { wait_terminal $p $j }
+check hold-drained 3 [done_among $p h1 h2 h3]
+$p destroy
+
+# -- register remaps a kind to a proc of another name ------------------------
+
+set p [new_pool 1]
+$p register special fake_worker
+$p enqueue j1 special {plan {{sleep 20}}}
+wait_terminal $p j1
+check register-done done [$p state j1]
+check register-kind special [$p kind_of j1]
+$p destroy
+
+# -- the seeded verbs are available in a worker: namespace path + done -------
+
+set p [new_pool 1]
+set ::vph ""
+$p subscribe job-phase {apply {{job name} {set ::vph $name}}}
+$p enqueue j1 vphase {}
+wait_terminal $p j1
+check verb-done done [$p state j1]
+check verb-phase started $::vph
+$p destroy
+
+# -- an uncaught error in a verb body lands the job failed -------------------
+
+set p [new_pool 1]
+set ::vfr ""
+$p subscribe job-failed {apply {{job r} {set ::vfr $r}}}
+$p enqueue j1 verror {}
+wait_terminal $p j1
+check verb-failed failed [$p state j1]
+check verb-fail-msg 1 [string match *boom-j1* $::vfr]
+$p destroy
+
+# -- a verb body that returns with no terminal verb lands done, empty --------
+
+set p [new_pool 1]
+set ::vdr none
+$p subscribe job-done {apply {{job r} {set ::vdr $r}}}
+$p enqueue j1 vnoterm {}
+wait_terminal $p j1
+check verb-noterm done [$p state j1]
+check verb-noterm-empty "" $::vdr
+$p destroy
+
+# -- cancelling a paused verb body breaks the pause into a cancel ------------
+
+set p [new_pool 1]
+$p enqueue j1 vbeats {beats 40 beat 25}
+wait_state $p j1 running
+$p pause_job j1
+wait_state $p j1 paused
+check verb-paused paused [$p state j1]
+$p cancel j1
+wait_terminal $p j1
+check verb-cancel-breaks-pause cancelled [$p state j1]
 $p destroy
 
 # -- a message for an unknown job is refused, not obeyed ----------------------

@@ -45,6 +45,8 @@ set DEMOS [dict create \
         runargs {} teaches "a subprocess watchdog that owns the whole kill"] \
     jobpool    [dict create file jobpool-demo.tcl kind CLI page jobpool.md \
         runargs {} teaches "a worker pool that owns each job's lifecycle"] \
+    jobloop    [dict create file jobloop-demo.tcl kind CLI page jobloop.md \
+        runargs {} teaches "the same lifecycle on coroutines, no threads"] \
 ]
 
 # ---- argv through ocmdline --------------------------------------------------

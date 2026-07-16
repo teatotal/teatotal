@@ -1,74 +1,50 @@
 package require Tcl 9
 package require TclOO
-package require Thread
 package require leash
-package provide jobpool 1.0
+package provide jobloop 1.0
 
-# jobpool - a worker pool that owns each job's lifecycle, not just its
-# thread.
+# jobloop - an event-loop job pool that owns each job's lifecycle, not just
+# its coroutine.
 #
-# tpool runs your jobs and hands back a result; nothing between the post
-# and the result is yours to steer. You cannot cancel a job that is
-# already running, hold the queue on demand, keep one kind of job to a
-# single worker while the rest fan out, or watch a job move through its
-# states without polling. jobpool is that missing layer: one shared pool
-# of pre-spawned worker threads, a per-job state machine (queued, running,
-# paused, rate_limited, and the terminals done/failed/cancelled),
-# cooperative cancel and pause of a *running* job through a sentinel the
-# worker polls, a global concurrency cap with a per-kind sub-cap inside it,
-# per-kind pacing floors and holds, a lifetime launch cap, and an event
-# stream a subscriber follows instead of decoding thread messages by hand.
+# A coroutine on the Tcl event loop already waits well: park on a
+# fileevent or an after, yield, resume when the world answers. What bare
+# coroutines do not give you is everything around the wait: no cap on how
+# many run at once, no way to cancel one that is mid-wait, no queue to hold
+# or pace, and no account of where each job stands short of instrumenting
+# every body by hand. jobloop is that layer, built once: each job runs as
+# a coroutine the pool owns, on the event loop the caller already has - one
+# interpreter, no Thread package, no message marshalling. Jobs move through
+# a small state machine; a running job is cancelled or paused cooperatively
+# at its own safe points; per-kind caps, pacing floors, holds, and a
+# lifetime launch cap shape which job launches next; and every transition
+# is an event a subscriber follows.
 #
-#   set pool [jobpool new 8 -init {source workers.tcl}]
-#   $pool subscribe job-state {apply {{job st} {puts "$job -> $st"}}}
-#   $pool set_kind_cap heavy 1             ;# one heavy job at a time, rest fan out
-#   $pool set_kind_pace heavy 400          ;# and >=400 ms between heavy launches
-#   $pool enqueue job42 heavy {input data-42}
-#   $pool cancel job42                     ;# reaches it even mid-run
+#   set loop [jobloop new 8]
+#   $loop subscribe job-done {apply {{job result} {puts "$job: $result"}}}
+#   $loop set_kind_cap fetch 2             ;# two fetches at a time, rest fan out
+#   $loop set_kind_pace fetch 400          ;# and >=400 ms between fetch launches
+#   $loop enqueue job42 fetch {url http://example.com/feed}
+#   $loop cancel job42                     ;# reaches it even mid-wait
 #
-# THE POOL AND ITS WORKERS
+# THE WORKERS
 #
-# Workers live in the thread pool's own interpreters, seeded once from the
-# -init script. Before that script runs the pool seeds each interpreter
-# with the worker verbs (::jobpool::worker::*) and the plumbing they need:
-# ::main_tid and ::pool, so a verb can message home, and ::jobpool_tsv, the
-# shared-variable array a worker polls for its cancel and pause sentinels.
-# A job's kind names the proc that runs it, defined by -init and called as
-# `<kind> <job> <opts>`; register remaps a kind to any command prefix. The
-# body reports and stays cancellable through the verbs, picked up with one
-# `namespace path ::jobpool::worker` line.
+# A job's kind names the command that runs it, called as `<kind> <job>
+# <opts>` inside a coroutine the pool owns, in the calling interpreter.
+# register remaps a kind to any command prefix; an unregistered kind calls
+# the command of its own name. A worker waits the loop's way: arm a
+# fileevent or an after that resumes [info coroutine], then yield. A worker
+# that blocks instead, in a bare vwait or a synchronous read, stalls every
+# job in the process, which is the sign the work belongs in jobpool.
 #
-# CONSTRUCTION
+# THE WORKER VERBS (::jobloop::worker::*)
 #
-#   jobpool new jobs ?-init script? ?-log cmd? ?-logger service?
-#     jobs        the pool size: this many worker threads, pre-spawned.
-#     -init       the worker bootstrap, run once per worker interpreter.
-#     -log        a command prefix called with one string for each
-#                 dropped/out-of-order message (a diagnostic channel).
-#     -logger     a logger(n) service name for the same diagnostics
-#                 (default "jobpool").
-#
-# Pre-spawning is not a tuning choice. With a lazily grown pool the Thread
-# package keeps one worker for the pool's whole life no matter how many
-# jobs arrive, and everything after the first runs in series; equal min
-# and max worker counts are the only shape that gives real parallelism.
-#
-# THE STATE MACHINE
-#
-#   queued -> running -> done|failed|cancelled
-#   running <-> paused           (user hold, via the pause sentinel)
-#   running <-> rate_limited     (worker waiting on an external limit)
-#   queued  -> cancelled         (dropped before it ever posts)
-#
-# running, paused and rate_limited each hold a worker slot; queued does
-# not. A cancel on a queued job drops it in place; on a running job it
-# sets the sentinel and waits for the worker to notice and report back.
-#
-# THE WORKER VERBS (::jobpool::worker::*, seeded into each interpreter)
+# A body picks up the verbs with one `namespace path ::jobloop::worker`
+# line; each takes the job first. Every verb resolves its pool from
+# [info coroutine], so the same body reports to whichever loop owns it.
 #
 # checkpoint job         the cancel and pause observation point. On cancel
 #                        it reports the cancellation and unwinds the body;
-#                        on pause it parks (polling the sentinel) until
+#                        on pause it parks the coroutine (a yield) until
 #                        resumed, then re-checks cancel, so cancelling a
 #                        paused job takes at the park.
 # phase job name         informational: entered a named phase
@@ -80,27 +56,45 @@ package provide jobpool 1.0
 #
 # A body that returns without a terminal verb is reported done with an
 # empty result; an uncaught error is reported failed with its message; the
-# cancel unwind is trapped in the injected `run` wrapper. However a body
-# ends, its slot is freed.
+# cancel unwind (a JOBLOOP CANCEL errorcode) is trapped in RunJob. However
+# a body ends, its slot is freed.
 #
-# THE MESSAGE SURFACE (worker thread -> pool, via thread::send -async)
+# CONSTRUCTION
 #
-# Each verb lands on a matching pool method, run on the pool's own thread.
-# State-changing messages are validated against the job's current state and
-# dropped (with a diagnostic) when they do not fit, so a message that
-# arrives after the job was cancelled cannot resurrect it.
+#   jobloop new jobs ?-log cmd? ?-logger service?
+#     jobs        the pool size: at most this many concurrent coroutines.
+#     -log        a command prefix called with one string per dropped or
+#                 out-of-order report (a diagnostic channel).
+#     -logger     a logger(n) service name for the same (default "jobloop").
+#
+# There is no worker bootstrap: workers are commands in the calling
+# interpreter, defined wherever the caller keeps them.
+#
+# THE STATE MACHINE
+#
+#   queued -> running -> done|failed|cancelled
+#   running <-> paused           (user hold, observed at a checkpoint)
+#   running <-> rate_limited     (worker waiting on an external limit)
+#   queued  -> cancelled         (dropped before it ever launches)
+#
+# running, paused and rate_limited each hold one of the pool's slots;
+# queued does not.
+#
+# THE REPORTING SURFACE (verb -> pool method)
 #
 #   on_phase on_progress on_rate_limited on_rate_limit_cleared
 #   on_paused on_resumed on_done on_failed on_cancelled
 #
-# A consumer with its own message kinds subclasses jobpool and adds the
-# matching on_<name> methods; the inherited _fire and the _expect guards
-# are there to build them from.
+# A report that changes state is checked against the job's current state
+# and dropped, with a diagnostic, when it does not fit, so a stale report
+# cannot revive a finished job. A consumer with reports of its own
+# subclasses jobloop and adds the matching on_<name> methods; the inherited
+# _fire and the _expect guards are the pieces to build them from.
 #
 # PACING, HOLDS, AND THE COUNT CAP
 #
-#   set_kind_pace kind ms   >=ms between successive launches of a kind;
-#                           its jobs wait in the queue, other kinds launch
+#   set_kind_pace kind ms   >=ms between successive launches of a kind; its
+#                           jobs wait in the queue, other kinds launch
 #                           around them. Paces launches, not completions.
 #   hold_kind kind          stop launching a kind while its running jobs
 #                           finish; the cap underneath is untouched. The
@@ -109,31 +103,61 @@ package provide jobpool 1.0
 #   set_count_cap n         stop launching after n launches in the pool's
 #                           lifetime, firing count-cap-reached once; 0 lifts.
 #
-# THE EVENT STREAM (pool -> subscribers, on the pool's thread)
+# THE EVENT STREAM
 #
 #   subscribe <event> <cmd>    every fire of <event> calls cmd with the
 #                              event's arguments appended.
 #
 # job-state fires on every transition (job, new-state); the finer events
 # job-phase, job-progress, job-done, job-failed, job-paused, job-resumed,
-# job-rate-limited, job-rate-limit-cleared carry each message on. queue-
+# job-rate-limited, job-rate-limit-cleared carry each report on. queue-
 # paused/queue-resumed track the whole-queue hold; kind-held/kind-released
 # track a single kind; count-cap-reached fires when the launch budget runs
-# out. Either, both, or neither may be listening; the pool fires regardless.
+# out.
+#
+# NOTES
+#
+# Cancel and pause are cooperative: a worker that never calls checkpoint is
+# never interrupted, the price of never tearing a coroutine out of its own
+# stack. destroy cancels the pool's pending timers (through leash) and
+# deletes its coroutines; that reaping relies on the yield convention, and
+# a coroutine suspended inside a nested vwait of its own cannot be deleted
+# mid-wait. Cancel and drain such a job before destroying, or wait the
+# loop's way.
 #
 # Written against Tcl 9. Copyright (c) 2025 Weiwu Zhang, MIT license.
 
-oo::class create jobpool {
+# The worker vocabulary. Each verb resolves the owning pool from the
+# process-global Owner dict, keyed by the running coroutine; RunJob sets and
+# clears that key around each body. The verbs are commands, not methods, so
+# a body in the calling interpreter picks them up with `namespace path`.
+namespace eval ::jobloop {
+    variable Owner
+    if {![info exists Owner]} { set Owner [dict create] }
+}
+namespace eval ::jobloop::worker {
+    proc _pool {} { dict get $::jobloop::Owner [info coroutine] }
+    proc checkpoint {job}          { [_pool] _checkpoint $job }
+    proc phase {job name}          { [_pool] on_phase $job $name }
+    proc progress {job text}       { [_pool] on_progress $job $text }
+    proc rate_limited {job until}  { [_pool] on_rate_limited $job $until }
+    proc rate_limit_cleared {job}  { [_pool] on_rate_limit_cleared $job }
+    proc done {job {result {}}}    { [_pool] on_done $job $result }
+    proc failed {job reason}       { [_pool] on_failed $job $reason }
+}
+
+oo::class create jobloop {
     mixin leash
 
-    variable Pool Jobs KindCap
-    variable Queue JobState JobMeta PostId
+    variable Jobs KindCap
+    variable Queue JobState JobMeta
     variable QueuePaused
-    variable LogCallback LogService PreLaunchCallback Subs Sentinels
+    variable LogCallback LogService PreLaunchCallback Subs
     variable Terminal Reg
     variable KindPace LastLaunch PaceTimer
     variable HeldKinds HeldAnnounced
     variable CountCap Launched CountAnnounced
+    variable Coros CancelFlag PauseFlag Serial
 
     constructor {jobs args} {
         set Jobs             $jobs
@@ -141,7 +165,6 @@ oo::class create jobpool {
         set Queue            {}
         set JobState         [dict create]
         set JobMeta          [dict create]
-        set PostId           [dict create]
         set QueuePaused      0
         set PreLaunchCallback ""
         set Subs             [dict create]
@@ -155,104 +178,33 @@ oo::class create jobpool {
         set CountCap         0
         set Launched         0
         set CountAnnounced   0
+        set Coros            [dict create]
+        set CancelFlag       [dict create]
+        set PauseFlag        [dict create]
+        set Serial           0
 
         set LogCallback ""
-        set LogService  jobpool
-        set init        ""
+        set LogService  jobloop
         foreach {opt val} $args {
             switch -- $opt {
                 -log     { set LogCallback $val }
-                -init    { set init        $val }
                 -logger  { set LogService  $val }
-                default  { error "jobpool: unknown option $opt" }
+                default  { error "jobloop: unknown option $opt" }
             }
         }
-
-        # The sentinel channel: a thread shared-variable array private to
-        # this pool, so two pools in one process never cross cancel/pause
-        # flags. The worker reads it under the ::jobpool_tsv name the
-        # initcmd injects below.
-        set Sentinels ::jobpool::s[my Serial]
-
-        set me  [self]
-        set tid [thread::id]
-        # The preamble runs before the user's -init, so a body sourced there
-        # can `namespace path ::jobpool::worker` and pick up the verbs.
-        set initcmd [string cat \
-            "set ::main_tid [list $tid]\n" \
-            "set ::pool [list $me]\n" \
-            "set ::jobpool_tsv [list $Sentinels]\n" \
-            [my _preamble] "\n" \
-            $init]
-        set Pool [tpool::create \
-            -minworkers $jobs \
-            -maxworkers $jobs \
-            -idletime   60 \
-            -initcmd    $initcmd]
     }
 
     destructor {
-        # leash (the mixin) has already cancelled the pacing timer and
-        # chained here; release the thread pool. Running jobs finish on
-        # their own threads and their late reports land nowhere.
-        if {[info exists Pool]} { catch {tpool::release $Pool} }
-    }
-
-    # A per-interp serial, so each pool's sentinel array has its own name.
-    method Serial {} {
-        if {![info exists ::jobpool_seq]} { set ::jobpool_seq 0 }
-        return [incr ::jobpool_seq]
-    }
-
-    # The worker-side vocabulary, seeded into every worker interpreter. Each
-    # verb marshals home with thread::send -async; checkpoint reads the tsv
-    # sentinels. run wraps a body so it frees its slot however it ends: a
-    # bare return reports done empty, an error reports failed, and the
-    # cancel unwind (a JOBPOOL CANCEL errorcode raised by checkpoint) is
-    # swallowed after on_cancelled has already gone home.
-    method _preamble {} {
-        return {
-            namespace eval ::jobpool::worker {}
-            proc ::jobpool::worker::_home {name args} {
-                thread::send -async $::main_tid [list $::pool $name {*}$args]
-            }
-            proc ::jobpool::worker::_cancelled {job} {
-                tsv::exists $::jobpool_tsv $job.cancel
-            }
-            proc ::jobpool::worker::_paused {job} {
-                tsv::exists $::jobpool_tsv $job.pause
-            }
-            proc ::jobpool::worker::checkpoint {job} {
-                if {[_cancelled $job]} {
-                    _home on_cancelled $job
-                    return -code error -errorcode {JOBPOOL CANCEL} cancelled
-                }
-                if {[_paused $job]} {
-                    _home on_paused $job
-                    while {[_paused $job] && ![_cancelled $job]} { after 20 }
-                    if {[_cancelled $job]} {
-                        _home on_cancelled $job
-                        return -code error -errorcode {JOBPOOL CANCEL} cancelled
-                    }
-                    _home on_resumed $job
-                }
-            }
-            proc ::jobpool::worker::phase {job name} { _home on_phase $job $name }
-            proc ::jobpool::worker::progress {job text} { _home on_progress $job $text }
-            proc ::jobpool::worker::rate_limited {job until} { _home on_rate_limited $job $until }
-            proc ::jobpool::worker::rate_limit_cleared {job} { _home on_rate_limit_cleared $job }
-            proc ::jobpool::worker::done {job {result {}}} { _home on_done $job $result }
-            proc ::jobpool::worker::failed {job reason} { _home on_failed $job $reason }
-            proc ::jobpool::worker::run {cmdprefix job opts} {
-                try {
-                    {*}$cmdprefix $job $opts
-                    done $job
-                } trap {JOBPOOL CANCEL} {} {
-                } on error {msg} {
-                    failed $job $msg
-                }
-            }
+        # leash (the mixin) has already cancelled the pool's timers and, in
+        # deleting the instance namespace, reaps every coroutine armed there.
+        # Drop this pool's keys from the shared Owner dict so a torn-down
+        # pool leaves nothing behind. Collect the keys before unsetting, not
+        # during the walk.
+        set drop {}
+        dict for {co owner} $::jobloop::Owner {
+            if {$owner eq [self]} { lappend drop $co }
         }
+        foreach co $drop { dict unset ::jobloop::Owner $co }
     }
 
     # ─── Subscription ────────────────────────────────────────────────
@@ -265,9 +217,7 @@ oo::class create jobpool {
 
     # set_pre_launch_callback - a synchronous admission gate fired just
     # before each launch, as `{*}$cb $job $kind $idx $total`. Return "abort"
-    # to drop the job before any worker runs; anything else admits it. idx
-    # is the job's 1-based position among those enqueued and total the count
-    # so far, so an admitter can pace by position.
+    # to cancel the job before any coroutine runs; anything else admits it.
     method set_pre_launch_callback {cb} { set PreLaunchCallback $cb }
 
     # ─── Accessors ───────────────────────────────────────────────────
@@ -288,8 +238,8 @@ oo::class create jobpool {
         }
         return $n
     }
-    # active_jobs - jobs holding a worker slot: posted, not yet terminal.
-    # Queued jobs are not active; they have not posted.
+    # active_jobs - jobs holding a slot: launched, not yet terminal. Queued
+    # jobs are not active; they have not launched.
     method active_jobs {} {
         set out {}
         dict for {job state} $JobState {
@@ -311,10 +261,8 @@ oo::class create jobpool {
     method launched_count {} { return $Launched }
 
     # set_kind_cap - a per-kind concurrency sub-cap inside the global Jobs
-    # cap. A job of this kind posts only while fewer than <cap> of its kind
-    # are active. The default cap is Jobs (no extra limit). This is what
-    # lets one serial kind share a pool with parallel ones without a second
-    # pool.
+    # cap. A job of this kind launches only while fewer than <cap> of its
+    # kind are active. The default cap is Jobs (no extra limit).
     method set_kind_cap {kind cap} { dict set KindCap $kind $cap }
 
     # set_kind_pace - keep at least ms between successive launches of a
@@ -328,7 +276,7 @@ oo::class create jobpool {
     method set_count_cap {n} {
         set CountCap $n
         set CountAnnounced 0
-        my _try_post_next
+        my _try_launch
     }
 
     # hold_kind - stop a kind from launching while its running jobs finish
@@ -343,7 +291,7 @@ oo::class create jobpool {
         dict unset HeldKinds $kind
         catch {dict unset HeldAnnounced $kind}
         my _fire kind-released $kind
-        my _try_post_next
+        my _try_launch
     }
 
     method _active_count_for_kind {kind} {
@@ -356,13 +304,13 @@ oo::class create jobpool {
 
     # ─── Mutators ────────────────────────────────────────────────────
 
-    # register - remap a kind to a command prefix in the worker
-    # interpreters. An unregistered kind runs the command of its own name.
+    # register - remap a kind to a command prefix. An unregistered kind runs
+    # the command of its own name.
     method register {kind cmdprefix} { dict set Reg $kind $cmdprefix }
 
-    # enqueue - register a job. kind names the proc that runs it and is the
-    # axis the per-kind cap, pacing, and holds work on; opts is the dict
-    # that proc receives.
+    # enqueue - register a job. kind names the command that runs it and is
+    # the axis the per-kind cap, pacing, and holds work on; opts is the dict
+    # that command receives.
     method enqueue {job kind opts} {
         if {[dict exists $JobState $job]} {
             my _log "enqueue: job $job already present (state [dict get $JobState $job]); ignoring"
@@ -376,12 +324,12 @@ oo::class create jobpool {
             started_at ""]
         lappend Queue $job
         my _fire job-state $job queued
-        my _try_post_next
+        my _try_launch
     }
 
-    # cancel - a queued job drops before it posts; a running job gets the
-    # cancel sentinel and reports back when the worker next checks. A paused
-    # job's pause loop exits on the sentinel, into the post-pause check.
+    # cancel - a queued job drops before it launches; a running job gets the
+    # cancel flag and unwinds at its next checkpoint. A paused job is resumed
+    # straight into the post-pause cancel check.
     method cancel {job} {
         if {![dict exists $JobState $job]} return
         set s [dict get $JobState $job]
@@ -392,30 +340,32 @@ oo::class create jobpool {
             return
         }
         if {$s in $Terminal} return
-        tsv::set $Sentinels $job.cancel 1
+        dict set CancelFlag $job 1
+        if {$s eq "paused"} { my _resume_coro $job }
     }
 
     method pause_job {job} {
         if {![dict exists $JobState $job]} return
         if {[dict get $JobState $job] in $Terminal} return
-        tsv::set $Sentinels $job.pause 1
+        dict set PauseFlag $job 1
     }
     method resume_job {job} {
         if {![dict exists $JobState $job]} return
-        catch {tsv::unset $Sentinels $job.pause}
+        set state [dict get $JobState $job]
+        catch {dict unset PauseFlag $job}
+        if {$state eq "paused"} { my _resume_coro $job }
     }
     method pause_queue {} { set QueuePaused 1; my _fire queue-paused }
     method resume_queue {} {
         set QueuePaused 0
         my _fire queue-resumed
-        my _try_post_next
+        my _try_launch
     }
 
-    # prune_missing - drop every job whose key is not in $valid_jobs. A
-    # caller that recomputes the set of jobs it still wants uses this to
-    # shed the rest in one call. Active jobs (running/paused/rate_limited)
-    # keep their state: they own a slot and will reach a terminal message on
-    # their own. Only terminal or not-yet-posted jobs are collectable.
+    # prune_missing - drop every job whose key is not in $valid_jobs. Active
+    # jobs (running/paused/rate_limited) keep their state: they own a slot
+    # and will reach a terminal report on their own. Only terminal or
+    # not-yet-launched jobs are collectable.
     method prune_missing {valid_jobs} {
         set valid [dict create]
         foreach r $valid_jobs { dict set valid $r 1 }
@@ -427,30 +377,29 @@ oo::class create jobpool {
         }
         foreach job $dropped {
             dict unset JobState $job
-            catch {dict unset JobMeta  $job}
-            catch {dict unset PostId $job}
+            catch {dict unset JobMeta $job}
+            catch {dict unset CancelFlag $job}
+            catch {dict unset PauseFlag $job}
             set idx [lsearch -exact $Queue $job]
             if {$idx >= 0} { set Queue [lreplace $Queue $idx $idx] }
-            catch {tsv::unset $Sentinels $job.cancel}
-            catch {tsv::unset $Sentinels $job.pause}
         }
         return [llength $dropped]
     }
 
     # requeue - move a terminal job back to queued for a retry, clearing any
-    # prior sentinel.
+    # prior flag.
     method requeue {job} {
         if {![dict exists $JobState $job]} return
         if {[dict get $JobState $job] ni $Terminal} return
-        catch {tsv::unset $Sentinels $job.cancel}
-        catch {tsv::unset $Sentinels $job.pause}
+        catch {dict unset CancelFlag $job}
+        catch {dict unset PauseFlag $job}
         dict set JobMeta $job started_at ""
         my _set_state $job queued
         lappend Queue $job
-        my _try_post_next
+        my _try_launch
     }
 
-    # ─── Worker → pool messages ──────────────────────────────────────
+    # ─── Worker verb → pool reports ──────────────────────────────────
 
     method on_phase {job phase} {
         if {![my _expect_active $job phase]} return
@@ -464,19 +413,18 @@ oo::class create jobpool {
         if {![my _expect $job done {running paused rate_limited}]} return
         my _set_state $job done
         my _fire job-done $job $result
-        my _try_post_next
+        my _try_launch
     }
     method on_failed {job reason} {
         if {![my _expect $job failed {running paused rate_limited}]} return
         my _set_state $job failed
         my _fire job-failed $job $reason
-        my _try_post_next
+        my _try_launch
     }
     method on_cancelled {job} {
         if {![my _expect $job cancelled {running paused}]} return
         my _set_state $job cancelled
-        catch {tsv::unset $Sentinels $job.cancel}
-        my _try_post_next
+        my _try_launch
     }
     method on_rate_limited {job until} {
         if {![my _expect $job rate_limited running]} return
@@ -499,19 +447,95 @@ oo::class create jobpool {
         my _fire job-resumed $job
     }
 
+    # ─── Coroutine mechanics ─────────────────────────────────────────
+
+    # _checkpoint - the pool side of the checkpoint verb, running in the
+    # job's own coroutine. A pending cancel reports the cancellation and
+    # raises JOBLOOP CANCEL, which RunJob traps; a pending pause reports it,
+    # parks the coroutine on a yield, and on resume re-checks cancel first,
+    # so cancelling a paused job takes at the park. Exported so the verb, a
+    # plain command outside the object, can reach it.
+    method _checkpoint {job} {
+        if {[dict exists $CancelFlag $job]} {
+            my on_cancelled $job
+            return -code error -errorcode {JOBLOOP CANCEL} cancelled
+        }
+        if {[dict exists $PauseFlag $job]} {
+            my on_paused $job
+            if {[dict get $JobState $job] ne "paused"} return
+            yield
+            if {[dict exists $CancelFlag $job]} {
+                my on_cancelled $job
+                return -code error -errorcode {JOBLOOP CANCEL} cancelled
+            }
+            my on_resumed $job
+        }
+    }
+    export _checkpoint
+
+    method _resume_coro {job} {
+        if {![dict exists $Coros $job]} return
+        set co [dict get $Coros $job]
+        if {[llength [info commands $co]]} { $co }
+    }
+
+    # _start - fired by the launch's 0 ms timer, off the queue walk so no
+    # worker code runs inline. A cancel arriving in the gap reports the
+    # cancellation instead of starting the body.
+    method _start {job} {
+        if {![dict exists $JobState $job]} return
+        if {[dict get $JobState $job] ne "running"} return
+        if {[dict exists $CancelFlag $job]} {
+            my on_cancelled $job
+            return
+        }
+        set name co[incr Serial]
+        set co [info object namespace [self]]::$name
+        # Key Owner before creating the coroutine: the body runs to its first
+        # yield the moment `coro` creates it, and may call a verb at once.
+        dict set ::jobloop::Owner $co [self]
+        dict set Coros $job $co
+        my coro $name [namespace which my] RunJob $job
+    }
+
+    # RunJob - the coroutine body. It runs the worker command and frees the
+    # slot however that ends: a bare return reports done empty, an uncaught
+    # error reports failed, the cancel unwind is trapped. The finally clears
+    # the coroutine's Owner key and the Coros entry.
+    method RunJob {job} {
+        set co [info coroutine]
+        try {
+            set meta [dict get $JobMeta $job]
+            set kind [dict get $meta kind]
+            set opts [dict get $meta opts]
+            set cmdprefix [expr {[dict exists $Reg $kind]
+                                 ? [dict get $Reg $kind] : $kind}]
+            try {
+                {*}$cmdprefix $job $opts
+                my on_done $job
+            } trap {JOBLOOP CANCEL} {} {
+            } on error {msg} {
+                my on_failed $job $msg
+            }
+        } finally {
+            catch {dict unset ::jobloop::Owner $co}
+            catch {dict unset Coros $job}
+        }
+    }
+
     # ─── Internals ───────────────────────────────────────────────────
 
-    # _try_post_next - walk the queue in order, posting any job that clears
-    # every admission control. State flips to running at post time, not on a
-    # later message, so the cap math reads straight from the state map and
-    # there is no queued/running gap to race. The controls fold in per job:
-    # the lifetime count cap first (nothing more launches once it is hit),
-    # then the global cap (stop and keep the tail), a held kind (announce
-    # once, keep queued, scan on so other kinds post), the per-kind cap, the
-    # pacing floor (track the soonest wait and arm one coalesced re-drain),
-    # and the admission gate. A job blocked by its kind alone stays queued
-    # while the scan continues, so other kinds still post.
-    method _try_post_next {} {
+    # _try_launch - walk the queue in order, launching any job that clears
+    # every admission control. State flips to running at launch time, before
+    # the coroutine starts, so the cap math reads straight from the state map
+    # and there is no queued/running gap to race; the body itself is armed by
+    # a 0 ms timer so the walk never runs worker code inline. The controls
+    # fold in per job: the lifetime count cap first (nothing more launches
+    # once it is hit), then the global cap (stop and keep the tail), a held
+    # kind (announce once, keep queued, scan on so other kinds launch), the
+    # per-kind cap, the pacing floor (track the soonest wait and arm one
+    # coalesced re-drain), and the admission gate.
+    method _try_launch {} {
         if {$QueuePaused} return
         my forget $PaceTimer
         set PaceTimer ""
@@ -565,7 +589,6 @@ oo::class create jobpool {
                     continue
                 }
             }
-            set opts [dict get $meta opts]
             if {$PreLaunchCallback ne ""} {
                 set total [dict size $JobState]
                 set idx 0
@@ -580,19 +603,16 @@ oo::class create jobpool {
                     continue
                 }
             }
-            set cmdprefix [expr {[dict exists $Reg $kind]
-                                 ? [dict get $Reg $kind] : $kind}]
             dict set LastLaunch $kind [clock milliseconds]
             incr Launched
             dict set JobMeta $job started_at [clock milliseconds]
             my _set_state $job running
-            dict set PostId $job [tpool::post -nowait $Pool \
-                [list ::jobpool::worker::run $cmdprefix $job $opts]]
+            my later 0 [list [namespace which my] _start $job]
         }
         set Queue $new_queue
         if {$soonest ne ""} {
             set PaceTimer [my later $soonest \
-                [list [namespace which my] _try_post_next]]
+                [list [namespace which my] _try_launch]]
         }
     }
 
@@ -610,8 +630,8 @@ oo::class create jobpool {
         }
         return 1
     }
-    # _expect_active - an informational message is allowed in any
-    # non-terminal state.
+    # _expect_active - an informational report is allowed in any non-terminal
+    # state.
     method _expect_active {job mtype} {
         if {![dict exists $JobState $job]} {
             my _log "$mtype for unknown job $job; dropping"
@@ -625,10 +645,14 @@ oo::class create jobpool {
     }
     method _set_state {job to} {
         dict set JobState $job $to
+        if {$to in $Terminal} {
+            catch {dict unset CancelFlag $job}
+            catch {dict unset PauseFlag $job}
+        }
         my _fire job-state $job $to
     }
     method _log {msg} {
         catch {${LogService}::warn $msg}
-        if {$LogCallback ne ""} { {*}$LogCallback "jobpool: $msg" }
+        if {$LogCallback ne ""} { {*}$LogCallback "jobloop: $msg" }
     }
 }
