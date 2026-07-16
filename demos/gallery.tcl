@@ -49,6 +49,8 @@ set DEMOS [dict create \
         runargs {} teaches "the same lifecycle on coroutines, no threads"] \
     jobfeed    [dict create file jobfeed-demo.tcl kind CLI page jobfeed.md \
         runargs {} teaches "the intake that feeds a job pool from a polled source"] \
+    yamlmuster [dict create file yamlmuster-demo.tcl kind CLI page yamlmuster.md \
+        runargs {} teaches "partial validation with a bill, rules that can only declare"] \
 ]
 
 # ---- argv through ocmdline --------------------------------------------------
