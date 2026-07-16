@@ -20,8 +20,8 @@ package provide jobfeed 1.0
 # caller already has.
 #
 #   set pool [jobloop new 8]
-#   $pool register email [list $feed jobWorker]
 #   set feed [jobfeed new [list $client fetch] runEmail $pool -interval 60]
+#   $pool register email [list $feed jobWorker]
 #   $feed subscribe job-done {apply {{e d} {puts "$e $d"}}}
 #   $feed start                       ;# begin polling the source
 #   $feed inject news 42 email        ;# deliver one now, ahead of the poll
@@ -31,10 +31,12 @@ package provide jobfeed 1.0
 # The source is a command prefix, called `{*}$source $callback`. It fetches
 # the current work list however it likes - an async HTTP GET, a database
 # read - and delivers it by invoking $callback with one argument, the list
-# of work rows. An empty source ("") disables polling: start and pull skip
-# it and emit pull-skip, for a feed that is fed only by inject. A row is a
-# dict; the default intake reads `group`, `id`, and `poolkind` from it, and a
-# consumer whose rows are shaped differently overrides onWorkQueue.
+# of work rows. An empty source ("") has nothing to fetch, so pull emits
+# pull-skip; with polling on the heartbeat still re-arms, so NextPoll keeps
+# publishing a deadline for an idle countdown and the skip repeats each interval
+# until a source appears. A feed fed only by inject turns polling off (-poll 0).
+# A row is a dict; the default intake reads `group`, `id`, and `poolkind` from
+# it, and a consumer whose rows are shaped differently overrides onWorkQueue.
 #
 # IDENTITY, DEDUP, AND DELIVERY
 #
@@ -66,23 +68,28 @@ package provide jobfeed 1.0
 #
 # HISTORY AND THE EVENT STREAM
 #
-# A live item sits in Items until it is reaped; on completion its outcome
-# lands in History (group, id, status, detail, version, origin, ts) and stays
-# there for a status view. subscribe registers an observer called with every
-# emitted (event, detail); the feed emits job-inject when a delivery is
-# announced, job-start when the worker begins, job-done when a job is reaped,
-# and pull-skip when a poll finds no source. A consumer with events of its
-# own (a board refresh, a policy notice) emits them through the same seam.
+# A live item sits in Items until it is reaped; on completion its outcome lands
+# in History (group, id, status, detail, origin, ts, plus any extra fields the
+# consumer's classifyOutcome returns) and stays there for a status view.
+# History is unbounded; historyTrim keeps the newest N rows. subscribe
+# registers an observer called with every emitted (event, detail); the feed
+# emits job-inject when a delivery is announced, job-start when the worker
+# begins, job-done when a job is reaped, job-board after a poll is taken in,
+# job-dup for a duplicate delivery, config when setPoll toggles the heartbeat,
+# and pull-skip when a poll finds no source. origin is the provenance of a
+# delivered item - which caller or surface delivered it - and is empty for
+# polled work. A consumer with events of its own emits them through emit.
 #
 # THE HOOKS
 #
-# Seven methods carry the default behaviour and are the override points for a
-# consumer's policy: gate (admission), classifyOutcome (read a result line
-# into status/detail/version), onOutcome (act on an outcome, e.g. feed a
-# breaker), replySock (answer a parked request), startLabel and dispatchArgs
-# (shape the worker's job-start notice and the dispatch's arguments), and
-# _sink (a second home for every emitted event, e.g. a log). A consumer
-# subclasses jobfeed and overrides the ones its policy needs, the same
+# Eight methods carry the default behaviour and are the override points for a
+# consumer's policy: gate (admission), classifyOutcome (read a result line into
+# status, detail, and a dict of extra history fields), onOutcome (act on an
+# outcome, e.g. feed a breaker), reply and duplicateReply (author and send a
+# reply body to a parked request, the duplicate case included), startLabel and
+# dispatchArgs (shape the worker's job-start notice and the dispatch's
+# arguments), and _sink (a second home for every emitted event, e.g. a log). A
+# consumer subclasses jobfeed and overrides the ones its policy needs, the same
 # subclassing idiom jobloop's reporting surface uses.
 #
 # Written against Tcl 9. Copyright (c) 2025 Weiwu Zhang, MIT license.
@@ -157,6 +164,10 @@ oo::class create jobfeed {
     # onWorkQueue when the rows are in). An empty source skips.
     method pull {} {
         set PollAfter ""
+        # An empty source has nothing to fetch, so it emits pull-skip; the
+        # heartbeat still re-arms while polling is on, so NextPoll keeps
+        # publishing a deadline (a consumer's idle countdown reads it even with
+        # no source) and the skip repeats each interval until a source appears.
         if {$Source eq ""} {
             my emit pull-skip "no work source configured"
         } else {
@@ -230,7 +241,7 @@ oo::class create jobfeed {
         }
         set item [dict merge [dict create \
             key $key group $group id $id poolkind $poolkind delivered $delivered \
-            sock "" origin "" line "" ts [clock seconds]] $opts]
+            reply "" origin "" line "" ts [clock seconds]] $opts]
         dict set Items $key $item
         # A delivery announces itself before the pool can launch it, so an
         # observer sees job-inject ahead of job-start; a polled row is silent.
@@ -246,12 +257,12 @@ oo::class create jobfeed {
     # this identity is already live, the delivery promotes it or answers
     # duplicate (promoteOrDup); otherwise it mints a delivered run. Either way
     # the pool is re-weighed so the delivery is seen at once.
-    method inject {group id poolkind {sock ""} {origin ""}} {
+    method inject {group id poolkind {reply ""} {origin ""}} {
         set hit [my workLive $group $id]
         if {$hit ne ""} {
-            my promoteOrDup $hit $group $id $sock $origin
+            my promoteOrDup $hit $group $id $reply $origin
         } else {
-            my _enqueue $group $id $poolkind 1 [dict create sock $sock origin $origin]
+            my _enqueue $group $id $poolkind 1 [dict create reply $reply origin $origin]
         }
         my drain
     }
@@ -285,15 +296,16 @@ oo::class create jobfeed {
     }
 
     # promoteOrDup - a delivery matched a live item. A QUEUED polled item is
-    # promoted in place (delivered 1, the delivery's sock and origin attached),
-    # because the source's row and the person's ask are one item, not two. A
-    # queued delivery, or a running item, answers duplicate: one live run per
-    # identity. The parked request is answered either way, so it never leaks.
-    method promoteOrDup {key group id sock origin} {
+    # promoted in place (delivered 1, the delivery's reply token and origin
+    # attached), because the source's row and the person's ask are one item, not
+    # two. A queued delivery, or a running item, answers duplicate: one live run
+    # per identity. The parked request is answered either way (the consumer's
+    # duplicateReply authors the body), so it never leaks.
+    method promoteOrDup {key group id reply origin} {
         set it [dict get $Items $key]
         if {[$Pool state $key] eq "queued" && ![dict get $it delivered]} {
             dict set it delivered 1
-            dict set it sock $sock
+            dict set it reply $reply
             dict set it origin $origin
             dict set Items $key $it
             my emit job-inject [dict create key $key group $group id $id \
@@ -301,7 +313,7 @@ oo::class create jobfeed {
             return
         }
         my emit job-dup [dict create key "$group:$id" group $group id $id origin $origin]
-        if {$sock ne ""} { my replySock $sock "{\"queued\":true,\"duplicate\":true}" }
+        if {$reply ne ""} { my reply $reply [my duplicateReply $group $id] }
     }
 
     # ─── Draining ────────────────────────────────────────────────────
@@ -350,15 +362,15 @@ oo::class create jobfeed {
         dict unset Items $key
         set line [string trim $line]
         if {$line eq ""} { set line "{\"status\":\"error\",\"detail\":\"job produced no result\"}" }
-        lassign [my classifyOutcome $item $line] status detail version
+        lassign [my classifyOutcome $item $line] status detail extra
         my onOutcome $item $status $detail
-        dict set History $key [dict create \
+        dict set History $key [dict merge [dict create \
             group [dict get $item group] id [dict get $item id] \
-            status $status detail $detail version $version \
-            origin [jobfeed::_dget $item origin] ts [clock seconds]]
+            status $status detail $detail \
+            origin [jobfeed::_dget $item origin] ts [clock seconds]] $extra]
         my emit job-done "$key $line"
-        set sock [jobfeed::_dget $item sock]
-        if {$sock ne ""} { my replySock $sock $line }
+        set reply [jobfeed::_dget $item reply]
+        if {$reply ne ""} { my reply $reply $line }
     }
 
     # ─── The read model ──────────────────────────────────────────────
@@ -367,8 +379,19 @@ oo::class create jobfeed {
     method workQueue {} { return $WorkList }
 
     # history - the retained outcome of every reaped job (key -> outcome dict),
-    # the read model a status view reads a finished job's fate from.
+    # the read model a status view reads a finished job's fate from. History
+    # grows unbounded; a long-lived feed caps it with historyTrim.
     method history {} { return $History }
+
+    # historyTrim - drop the oldest history rows, keeping the newest `keep`.
+    # History is insertion-ordered, so the oldest sit at the front.
+    method historyTrim {keep} {
+        set keys [dict keys $History]
+        set n [llength $keys]
+        if {$n > $keep} {
+            foreach k [lrange $keys 0 [expr {$n - $keep - 1}]] { dict unset History $k }
+        }
+    }
 
     # job - a snapshot of every live item (no request/channel internals).
     method job {} {
@@ -411,29 +434,35 @@ oo::class create jobfeed {
     # "abort" to drop it.
     method gate {job kind} { return "" }
 
-    # classifyOutcome - read a result line into {status detail version}. The
-    # default parses a JSON object's status (default "done"), detail, and
-    # version, and calls an unparseable line an error. Override to normalise a
-    # consumer's own status vocabulary.
+    # classifyOutcome - read a result line into {status detail extra}, where
+    # extra is a dict of additional fields merged into the history row (empty by
+    # default). The default parses a JSON object's status (default "done") and
+    # detail and calls an unparseable line an error. Override to normalise a
+    # consumer's own status vocabulary and to carry extra history fields.
     method classifyOutcome {item line} {
-        set status done; set detail ""; set version ""
+        set status done; set detail ""
         if {![catch {json::json2dict $line} res]} {
-            if {[dict exists $res status]}  { set status  [dict get $res status] }
-            if {[dict exists $res detail]}  { set detail  [dict get $res detail] }
-            if {[dict exists $res version]} { set version [dict get $res version] }
+            if {[dict exists $res status]} { set status [dict get $res status] }
+            if {[dict exists $res detail]} { set detail [dict get $res detail] }
         } else {
             set status error; set detail "unparseable result: $line"
         }
-        return [list $status $detail $version]
+        return [list $status $detail {}]
     }
 
     # onOutcome - act on a reaped outcome (its status and detail). The default
     # does nothing; override to feed a circuit breaker or a tally.
     method onOutcome {item status detail} {}
 
-    # replySock - answer a parked request that rode on the item's sock. The
-    # default does nothing; override to write the line back to a socket.
-    method replySock {sock line} {}
+    # reply - send a reply body to a parked request that rode on the item's
+    # reply token. The default does nothing; override to write the body back
+    # (e.g. to a socket).
+    method reply {to body} {}
+
+    # duplicateReply - the reply body for a delivery that met a live item (the
+    # duplicate case in promoteOrDup). The default is empty; override to author
+    # the body a caller's protocol expects.
+    method duplicateReply {group id} { return "" }
 
     # startLabel - the leading word of the job-start notice. Override to name
     # the worker's mode.

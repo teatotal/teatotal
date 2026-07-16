@@ -47,9 +47,10 @@ proc source_cb {callback} { {*}$callback $::rows }
 # in for one.
 oo::class create TestFeed {
     superclass jobfeed
-    variable Admit Seen
+    variable Admit Seen Replies
     method admit {v} { set Admit $v }
     method seen {} { return [expr {[info exists Seen] ? $Seen : {}}] }
+    method replies {} { return [expr {[info exists Replies] ? $Replies : {}}] }
     method gate {job kind} {
         if {[info exists Admit] && !$Admit} { return defer }
         return ""
@@ -57,6 +58,8 @@ oo::class create TestFeed {
     method onOutcome {item status detail} {
         lappend Seen "[dict get $item group]:[dict get $item id]=$status"
     }
+    method reply {to body} { lappend Replies "$to=$body" }
+    method duplicateReply {group id} { return "dup:$group:$id" }
 }
 
 # ── polled dedup: one identity, enqueued twice, stays one live item ──────────
@@ -158,6 +161,59 @@ set keys {}
 foreach r [$feed job] { lappend keys [dict get $r key] }
 check poll-enqueued-deduped [lsort {EI:1 EI:2}] [lsort $keys]
 check poll-workqueue-recorded 3 [llength [$feed workQueue]]
+$feed destroy
+$pool destroy
+
+# ── reply: a reaped item with a reply token gets the result line sent back ───
+
+set pool [jobloop new 8]
+set feed [TestFeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+$feed admit 1
+set ::plan(GI:1) "{\"status\":\"done\",\"detail\":\"gi-done\"}"
+$feed inject GI 1 work TOKEN client          ;# delivered, carrying a reply token
+drain
+check reply-on-reap 1 [expr {[llength [$feed replies]] == 1 && \
+    [string match "TOKEN=*gi-done*" [lindex [$feed replies] 0]]}]
+$feed destroy
+$pool destroy
+
+# ── duplicateReply: a second delivery of a live item answers via the hook ────
+
+set pool [jobloop new 8]
+$pool hold_kind work
+set feed [TestFeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+$feed admit 1
+$feed inject HI 2 work "" a                   ;# first delivery, queued (held)
+$feed inject HI 2 work RTOK b                 ;# second meets the live one -> dup
+check dup-reply "RTOK=dup:HI:2" [lindex [$feed replies] 0]
+$feed destroy
+$pool destroy
+
+# ── historyTrim keeps the newest N rows ─────────────────────────────────────
+
+set pool [jobloop new 8]
+set feed [jobfeed new "" dispatch $pool -poll 0]
+$pool register work [list $feed jobWorker]
+foreach id {1 2 3 4 5} { $feed enqueue TR $id work 0; drain }
+check history-full 5 [dict size [$feed history]]
+$feed historyTrim 2
+check history-trimmed 2 [dict size [$feed history]]
+check history-kept-newest {TR:4 TR:5} [dict keys [$feed history]]
+$feed destroy
+$pool destroy
+
+# ── empty source: pull emits pull-skip and the heartbeat still re-arms ───────
+
+set pool [jobloop new 8]
+set feed [jobfeed new "" dispatch $pool -poll 1 -interval 60]
+$pool register work [list $feed jobWorker]
+set ::skips 0
+$feed subscribe [list apply {{e d} { if {$e eq "pull-skip"} { incr ::skips } }}]
+$feed pull
+check empty-source-skip      1 $::skips
+check empty-source-heartbeat 1 [expr {[$feed nextPoll] ne ""}]
 $feed destroy
 $pool destroy
 

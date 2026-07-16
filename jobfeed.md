@@ -25,7 +25,7 @@ jobfeed is that layer, built once, on top of the pool the caller already has. It
 
 ## THE SOURCE
 
-The source is a command prefix, invoked `{*}$source $callback`. It fetches the current work list however it likes, an async HTTP GET or a database read, and delivers it by calling `$callback` with one argument, the list of rows. Asking asynchronously is the point. A remote source must never stall the loop, so **pull** fires the source and returns, and the rows arrive later at **onWorkQueue**. An empty source (`""`) disables polling: **start** and **pull** skip it and emit `pull-skip`, for a feed fed only by **inject**.
+The source is a command prefix, invoked `{*}$source $callback`. It fetches the current work list however it likes, an async HTTP GET or a database read, and delivers it by calling `$callback` with one argument, the list of rows. Asking asynchronously is the point. A remote source must never stall the loop, so **pull** fires the source and returns, and the rows arrive later at **onWorkQueue**. An empty source (`""`) has nothing to fetch, so **pull** emits `pull-skip`. With polling on the heartbeat still re-arms, so **nextPoll** keeps publishing a deadline for an idle countdown and the skip repeats each interval until a source appears; a feed fed only by **inject** turns polling off (`-poll 0`).
 
 A row is a dict. The default **onWorkQueue** reads `group`, `id`, and `poolkind` from each and enqueues it as polled work. A consumer whose rows carry more, such as a blocked flag, a scope to filter on, or rows that fan into a batch, overrides **onWorkQueue** and calls **enqueue** with its own extraction.
 
@@ -45,27 +45,30 @@ The pool's pre-launch callback is wired to the feed's **gate**, so a launch the 
 
 ## HISTORY AND THE READ MODEL
 
-A live item sits in **Items** until it is reaped. On completion its outcome lands in **History**, a row of *group, id, status, detail, version, origin, ts*, and stays there for a status view to read. **workQueue** returns the last polled work list, **job** a snapshot of every live item, and **nextPoll** with **pollInterval** the heartbeat's deadline and period for an idle countdown.
+A live item sits in **Items** until it is reaped. On completion its outcome lands in **History**, a row of *group, id, status, detail, origin, ts* plus any extra fields the consumer's **classifyOutcome** returns, and stays there for a status view to read. *origin* is the provenance of a delivered item, which caller or surface delivered it (a label such as `PWA`, `CLI`, or `GUI`), and is empty for polled work. History grows unbounded; a long-lived feed caps it with **historyTrim** *keep*, which drops the oldest rows and keeps the newest *keep*. **workQueue** returns the last polled work list, **job** a snapshot of every live item, and **nextPoll** with **pollInterval** the heartbeat's deadline and period for an idle countdown.
 
 ## THE EVENT STREAM
 
-**subscribe** *cmd* registers an observer, called with every emitted `event detail`; **unsubscribe** drops it. The feed emits `job-inject` when a delivery is announced, ahead of the pool's launch so an observer sees the injection before the start. It emits `job-start` when the worker begins, `job-done` when a job is reaped, `job-board` after a poll is taken in, `job-dup` for a delivery that met an item already live (running, or a prior delivery still queued), and `pull-skip` when a poll finds no source. A consumer with events of its own, a board refresh or a policy notice, emits them through the same **emit** seam, so its stream and the feed's are one.
+**subscribe** *cmd* registers an observer, called with every emitted `event detail`; **unsubscribe** drops it. The feed emits `job-inject` when a delivery is announced, ahead of the pool's launch so an observer sees the injection before the start. It emits `job-start` when the worker begins, `job-done` when a job is reaped, `job-board` after a poll is taken in, `job-dup` for a delivery that met an item already live (running, or a prior delivery still queued), `config` when **setPoll** toggles the heartbeat, and `pull-skip` when a poll finds no source. A consumer with events of its own, a board refresh or a policy notice, emits them through the same **emit** seam, so its stream and the feed's are one.
 
 ## THE HOOKS
 
-Seven methods carry the default behaviour and are the override points for a consumer's policy, the same subclass-and-override idiom jobloop's reporting surface uses:
+Eight methods carry the default behaviour and are the override points for a consumer's policy, the same subclass-and-override idiom jobloop's reporting surface uses:
 
 **gate** *job kind*
 : admission; return `defer`, `abort`, or admit.
 
 **classifyOutcome** *item line*
-: read a result line into `{status detail version}`. The default parses a JSON object and calls an unparseable line an error. *version* is an optional stamp the result may carry (a schema or run version), kept verbatim in the history row for a consumer that reads it and empty when the result omits it.
+: read a result line into `{status detail extra}`, where *extra* is a dict of additional fields merged into the history row (empty by default). The default parses a JSON object's status and detail and calls an unparseable line an error. Override to normalise a consumer's own status vocabulary and to carry extra history fields, such as a version stamp.
 
 **onOutcome** *item status detail*
 : act on a reaped outcome, feeding a breaker or keeping a tally. The default does nothing.
 
-**replySock** *sock line*
-: answer a request parked on the item. The default does nothing.
+**reply** *to body*
+: send a reply body to a parked request that rode on the item's reply token. The default does nothing; override to write the body back (e.g. to a socket).
+
+**duplicateReply** *group id*
+: the reply body for a delivery that met a live item (the duplicate case). The default is empty; override to author the body a caller's protocol expects.
 
 **startLabel** *item*
 : the leading word of the `job-start` notice.
