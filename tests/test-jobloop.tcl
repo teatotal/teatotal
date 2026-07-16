@@ -108,6 +108,23 @@ wait_terminal $loop j1
 check sync-done done [$loop state j1]
 $loop destroy
 
+# -- launched jobs progress together on the one event loop, not one at a time
+#
+# jobloop's concurrency is overlapping waits, not parallel CPU: coroutines
+# share the one event loop and make progress together once launched. Four
+# jobs each park on a 2s wait; wall time should land near one wait
+# (overlapped), not four (serial) - a body or a walk that blocked the loop
+# would fail the bound.
+
+set loop [new_loop 4]
+set t0 [clock milliseconds]
+foreach j {o1 o2 o3 o4} { $loop enqueue $j w_beats {beats 1 beat 2000} }
+foreach j {o1 o2 o3 o4} { wait_terminal $loop $j 6000 }
+set elapsed [expr {[clock milliseconds] - $t0}]
+check overlap-all-done 4 [done_among $loop o1 o2 o3 o4]
+check overlap-concurrent 1 [expr {$elapsed < 3500}]
+$loop destroy
+
 # -- the global cap holds: 4 jobs, 2 slots, 2 running ------------------------
 
 set loop [new_loop 2]
@@ -116,6 +133,38 @@ check cap-running 2 [running_among $loop a b c d]
 check cap-queued 2 [llength [$loop queued_jobs]]
 foreach j {a b c d} { wait_terminal $loop $j }
 check cap-all-done 4 [done_among $loop a b c d]
+$loop destroy
+
+# -- the pool stays full while work remains; a freed slot refills at once ----
+#
+# Regression guard: a partial first fill, or a walk that only refills once
+# per wave instead of the instant a slot frees, starves the queue toward
+# serial. Twelve jobs over four slots: the first fill must post exactly
+# four, and the active count must never dip below four while jobs still
+# wait, all the way to drain.
+
+set JOBS  4
+set NROWS 12
+set loop [new_loop $JOBS]
+$loop pause_queue
+for {set i 1} {$i <= $NROWS} {incr i} {
+    $loop enqueue f$i w_beats {beats 1 beat 300}
+}
+$loop resume_queue
+check fill-first-wave $JOBS [llength [$loop active_jobs]]
+check fill-rest-queued [expr {$NROWS - $JOBS}] [llength [$loop queued_jobs]]
+
+set ::saw_below_cap 0
+set t0 [clock milliseconds]
+while {[done_among $loop {*}[$loop all_jobs]] < $NROWS} {
+    set posted [llength [$loop active_jobs]]
+    set queued [llength [$loop queued_jobs]]
+    if {$queued > 0 && $posted < $JOBS} { set ::saw_below_cap 1 }
+    if {[clock milliseconds] - $t0 > 10000} break
+    pump 30
+}
+check fill-stays-full 0 $::saw_below_cap
+check fill-all-done $NROWS [done_among $loop {*}[$loop all_jobs]]
 $loop destroy
 
 # -- a per-kind cap serialises one kind while another fans out ---------------
@@ -127,6 +176,34 @@ foreach j {l1 l2}    { $loop enqueue $j light {beats 6 beat 30} }
 check kindcap-heavy 1 [running_among $loop h1 h2 h3]
 check kindcap-light 2 [running_among $loop l1 l2]
 foreach j {h1 h2 h3 l1 l2} { wait_terminal $loop $j }
+$loop destroy
+
+# -- count_by_kind counts terminal jobs by kind and state --------------------
+
+set loop [new_loop 4]
+$loop enqueue a1 heavy {beats 1 beat 20}
+$loop enqueue a2 heavy {beats 1 beat 20}
+$loop enqueue b1 light {beats 1 beat 20}
+$loop enqueue b2 light {beats 1 beat 20}
+$loop enqueue b3 light {beats 1 beat 20}
+foreach j {a1 a2 b1 b2 b3} { wait_terminal $loop $j }
+check countbykind-heavy-done 2 [$loop count_by_kind heavy done]
+check countbykind-light-done 3 [$loop count_by_kind light done]
+check countbykind-heavy-failed 0 [$loop count_by_kind heavy failed]
+$loop destroy
+
+# -- active_jobs holds only launched, non-terminal jobs -----------------------
+
+set loop [new_loop 4]
+$loop enqueue j1 w_beats {beats 1 beat 20}
+$loop enqueue j2 w_beats {beats 1 beat 20}
+$loop enqueue j3 w_beats {beats 40 beat 25}
+wait_terminal $loop j1
+wait_terminal $loop j2
+set active [$loop active_jobs]
+check activejobs-excludes-terminal 1 [llength $active]
+check activejobs-only-running j3 [lindex $active 0]
+$loop cancel j3; wait_terminal $loop j3
 $loop destroy
 
 # -- a running job is cancelled at a checkpoint mid-body ---------------------
@@ -409,9 +486,14 @@ set loop [new_loop 1]
 set ::fail_reason ""
 $loop subscribe job-failed {apply {{job r} {set ::fail_reason $r}}}
 $loop enqueue j1 w_error {}
+$loop enqueue j2 w_beats {beats 1 beat 20}
 wait_terminal $loop j1
 check error-failed failed [$loop state j1]
 check error-message 1 [string match *boom-j1* $::fail_reason]
+# j2 was queued behind j1 (pool of one); it must now run to completion -
+# proof the slot is genuinely free, not just relabelled.
+wait_terminal $loop j2
+check error-frees-slot done [$loop state j2]
 $loop destroy
 
 # -- a body that returns with no terminal verb lands done, empty result ------
@@ -423,6 +505,28 @@ $loop enqueue j1 w_noterm {}
 wait_terminal $loop j1
 check noterm-done done [$loop state j1]
 check noterm-empty "" $::done_result
+$loop destroy
+
+# -- a report for a job that was never enqueued is refused -------------------
+
+set ::logged2 {}
+set loop [jobloop new 1 -log [list apply {{acc msg} {lappend ::logged2 $msg}} logged2]]
+$loop on_phase ghost somephase
+check stale-unknown 1 [string match "*phase for unknown job ghost*" $::logged2]
+$loop destroy
+
+# -- a report that does not fit the job's current state is refused, the
+#    state left untouched ----------------------------------------------------
+
+set ::logged3 {}
+set loop [jobloop new 1 -log [list apply {{acc msg} {lappend ::logged3 $msg}} logged3]]
+$loop pause_queue
+$loop enqueue j1 w_beats {beats 1 beat 20}
+$loop on_done j1 too-early
+check stale-wrong-state 1 [string match "*done for job j1 in state queued*" $::logged3]
+check stale-state-unchanged queued [$loop state j1]
+$loop resume_queue
+wait_terminal $loop j1
 $loop destroy
 
 # -- a duplicate enqueue is dropped with a diagnostic ------------------------
