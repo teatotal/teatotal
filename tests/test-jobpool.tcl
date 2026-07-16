@@ -241,7 +241,7 @@ $p destroy
 
 set p [new_pool 2]
 $p pause_queue
-$p set_pre_launch_callback {apply {{job kind idx total} {
+$p set_pre_launch_callback {apply {{job kind} {
     expr {$job eq "skip" ? "abort" : ""}
 }}}
 $p enqueue keep fake_worker {plan {{sleep 20}}}
@@ -256,7 +256,7 @@ $p destroy
 
 set p [new_pool 2]
 set ::admit_d 0
-$p set_pre_launch_callback {apply {{job kind idx total} {
+$p set_pre_launch_callback {apply {{job kind} {
     expr {$job eq "d1" && !$::admit_d ? "defer" : ""}
 }}}
 $p enqueue d1 fake_worker {plan {{sleep 20}}}
@@ -272,7 +272,7 @@ $p destroy
 # -- defer and abort part ways: one waits, one dies, the third runs ----------
 
 set p [new_pool 3]
-$p set_pre_launch_callback {apply {{job kind idx total} {
+$p set_pre_launch_callback {apply {{job kind} {
     switch -- $job {drop {return abort} hold {return defer} default {return ""}}
 }}}
 $p enqueue drop fake_worker {plan {{sleep 20}}}

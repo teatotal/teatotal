@@ -390,7 +390,7 @@ $loop destroy
 
 set loop [new_loop 2]
 $loop pause_queue
-$loop set_pre_launch_callback {apply {{job kind idx total} {
+$loop set_pre_launch_callback {apply {{job kind} {
     expr {$job eq "skip" ? "abort" : ""}
 }}}
 $loop enqueue keep w_beats {beats 1 beat 20}
@@ -405,7 +405,7 @@ $loop destroy
 
 set loop [new_loop 2]
 set ::admit_d 0
-$loop set_pre_launch_callback {apply {{job kind idx total} {
+$loop set_pre_launch_callback {apply {{job kind} {
     expr {$job eq "d1" && !$::admit_d ? "defer" : ""}
 }}}
 $loop enqueue d1 w_beats {beats 2 beat 20}
@@ -421,7 +421,7 @@ $loop destroy
 # -- defer and abort part ways: one waits, one dies, the third runs ----------
 
 set loop [new_loop 3]
-$loop set_pre_launch_callback {apply {{job kind idx total} {
+$loop set_pre_launch_callback {apply {{job kind} {
     switch -- $job {drop {return abort} hold {return defer} default {return ""}}
 }}}
 $loop enqueue drop w_beats {beats 1 beat 20}

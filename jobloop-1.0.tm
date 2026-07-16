@@ -217,10 +217,10 @@ oo::class create jobloop {
     }
 
     # set_pre_launch_callback - a synchronous admission gate fired just
-    # before each launch, as `{*}$cb $job $kind $idx $total`. "abort"
-    # cancels the job before any coroutine runs; "defer" leaves it queued
-    # for a later walk, which any enqueue, completion, release, resume, or
-    # pace re-drain triggers; anything else admits it.
+    # before each launch, as `{*}$cb $job $kind`. "abort" cancels the job
+    # before any coroutine runs; "defer" leaves it queued for a later
+    # walk, which any enqueue, completion, release, resume, or pace
+    # re-drain triggers; anything else admits it.
     method set_pre_launch_callback {cb} { set PreLaunchCallback $cb }
 
     # ─── Accessors ───────────────────────────────────────────────────
@@ -636,14 +636,8 @@ oo::class create jobloop {
                 }
             }
             if {$PreLaunchCallback ne ""} {
-                set total [dict size $JobState]
-                set idx 0
-                dict for {r _} $JobState {
-                    incr idx
-                    if {$r eq $job} break
-                }
                 set verdict ""
-                catch {set verdict [{*}$PreLaunchCallback $job $kind $idx $total]}
+                catch {set verdict [{*}$PreLaunchCallback $job $kind]}
                 if {$verdict eq "abort"} {
                     my _set_state $job cancelled
                     continue

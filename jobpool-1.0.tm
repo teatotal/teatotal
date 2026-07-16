@@ -277,12 +277,10 @@ oo::class create jobpool {
     }
 
     # set_pre_launch_callback - a synchronous admission gate fired just
-    # before each launch, as `{*}$cb $job $kind $idx $total`. "abort" drops
-    # the job before any worker runs; "defer" leaves it queued for a later
-    # walk, which any enqueue, completion, release, resume, or pace re-drain
-    # triggers; anything else admits it. idx is the job's 1-based position
-    # among those enqueued and total the count so far, so an admitter can
-    # pace by position.
+    # before each launch, as `{*}$cb $job $kind`. "abort" drops the job
+    # before any worker runs; "defer" leaves it queued for a later walk,
+    # which any enqueue, completion, release, resume, or pace re-drain
+    # triggers; anything else admits it.
     method set_pre_launch_callback {cb} { set PreLaunchCallback $cb }
 
     # ─── Accessors ───────────────────────────────────────────────────
@@ -614,14 +612,8 @@ oo::class create jobpool {
             }
             set opts [dict get $meta opts]
             if {$PreLaunchCallback ne ""} {
-                set total [dict size $JobState]
-                set idx 0
-                dict for {r _} $JobState {
-                    incr idx
-                    if {$r eq $job} break
-                }
                 set verdict ""
-                catch {set verdict [{*}$PreLaunchCallback $job $kind $idx $total]}
+                catch {set verdict [{*}$PreLaunchCallback $job $kind]}
                 if {$verdict eq "abort"} {
                     my _set_state $job cancelled
                     continue
