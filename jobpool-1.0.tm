@@ -1,7 +1,7 @@
 package require Tcl 9
 package require TclOO
 package require Thread
-package require leash
+package require jobloop
 package provide jobpool 1.0
 
 # jobpool - a worker pool that owns each job's lifecycle, not just its
@@ -25,6 +25,14 @@ package provide jobpool 1.0
 #   $pool set_kind_pace heavy 400          ;# and >=400 ms between heavy launches
 #   $pool enqueue job42 heavy {input data-42}
 #   $pool cancel job42                     ;# reaches it even mid-run
+#
+# jobpool is the worker-thread runtime of ::jobloop::engine, the lifecycle
+# engine the jobloop module publishes: the queue, the state machine and its
+# guards, the admission controls, and the event stream live there, written
+# once for both twins. This module answers the engine's runtime seam with
+# threads: Launch posts the body to the tpool, the cancel and pause signals
+# travel as tsv sentinels the worker polls, and Reap reclaims each finished
+# job's tpool result record.
 #
 # THE POOL AND ITS WORKERS
 #
@@ -124,49 +132,21 @@ package provide jobpool 1.0
 # Written against Tcl 9. Copyright (c) 2025 Weiwu Zhang, MIT license.
 
 oo::class create jobpool {
-    mixin leash
+    superclass ::jobloop::engine
 
-    variable Pool Jobs KindCap
-    variable Queue JobState JobMeta PostId
-    variable QueuePaused
-    variable LogCallback LogService PreLaunchCallback Subs Sentinels
-    variable Terminal Reg
-    variable KindPace LastLaunch PaceTimer
-    variable HeldKinds HeldAnnounced
-    variable CountCap Launched CountAnnounced
+    variable JobMeta Reg LogName
+    variable Pool PostId Sentinels
 
     constructor {jobs args} {
-        set Jobs             $jobs
-        set KindCap          [dict create]
-        set Queue            {}
-        set JobState         [dict create]
-        set JobMeta          [dict create]
-        set PostId           [dict create]
-        set QueuePaused      0
-        set PreLaunchCallback ""
-        set Subs             [dict create]
-        set Terminal         {done failed cancelled}
-        set Reg              [dict create]
-        set KindPace         [dict create]
-        set LastLaunch       [dict create]
-        set PaceTimer        ""
-        set HeldKinds        [dict create]
-        set HeldAnnounced    [dict create]
-        set CountCap         0
-        set Launched         0
-        set CountAnnounced   0
+        set LogName jobpool
+        set PostId  [dict create]
 
-        set LogCallback ""
-        set LogService  jobpool
-        set init        ""
+        set init ""
+        set rest {}
         foreach {opt val} $args {
-            switch -- $opt {
-                -log     { set LogCallback $val }
-                -init    { set init        $val }
-                -logger  { set LogService  $val }
-                default  { error "jobpool: unknown option $opt" }
-            }
+            if {$opt eq "-init"} { set init $val } else { lappend rest $opt $val }
         }
+        next $jobs {*}$rest
 
         # The sentinel channel: a thread shared-variable array private to
         # this pool, so two pools in one process never cross cancel/pause
@@ -192,8 +172,8 @@ oo::class create jobpool {
     }
 
     destructor {
-        # leash (the mixin) has already cancelled the pacing timer and
-        # chained here; release the thread pool. Running jobs finish on
+        # leash (the engine's mixin) has already cancelled the pacing timer
+        # and chained here; release the thread pool. Running jobs finish on
         # their own threads and their late reports land nowhere.
         if {[info exists Pool]} { catch {tpool::release $Pool} }
     }
@@ -268,424 +248,32 @@ oo::class create jobpool {
         }
     }
 
-    # ─── Subscription ────────────────────────────────────────────────
-    method subscribe {event cb} { dict lappend Subs $event $cb }
-    method subscribed {event} { return [dict exists $Subs $event] }
-    method _fire {event args} {
-        if {![dict exists $Subs $event]} return
-        foreach cb [dict get $Subs $event] { {*}$cb {*}$args }
-    }
+    # ─── The runtime seam, over worker threads ───────────────────────
 
-    # set_pre_launch_callback - a synchronous admission gate fired just
-    # before each launch, as `{*}$cb $job $kind`. "abort" drops the job
-    # before any worker runs; "defer" leaves it queued for a later walk,
-    # which any enqueue, completion, release, resume, or pace re-drain
-    # triggers; anything else admits it.
-    method set_pre_launch_callback {cb} { set PreLaunchCallback $cb }
-
-    # ─── Accessors ───────────────────────────────────────────────────
-    method state {job} {
-        if {[dict exists $JobState $job]} { return [dict get $JobState $job] }
-        return ""
+    # Launch - post the body to the thread pool, keeping the post id so
+    # Reap can retrieve the result record after the terminal report.
+    method Launch {job} {
+        set meta [dict get $JobMeta $job]
+        set kind [dict get $meta kind]
+        set cmdprefix [expr {[dict exists $Reg $kind]
+                             ? [dict get $Reg $kind] : $kind}]
+        dict set PostId $job [tpool::post -nowait $Pool \
+            [list ::jobpool::worker::run $cmdprefix $job [dict get $meta opts]]]
     }
-    method kind_of {job} {
-        if {[dict exists $JobMeta $job]} { return [dict get $JobMeta $job kind] }
-        return ""
-    }
-    method count_by_kind {kind state} {
-        set n 0
-        dict for {job meta} $JobMeta {
-            if {[dict get $meta kind] ne $kind} continue
-            if {[dict get $JobState $job] ne $state} continue
-            incr n
-        }
-        return $n
-    }
-    # active_jobs - jobs holding a worker slot: posted, not yet terminal.
-    # Queued jobs are not active; they have not posted.
-    method active_jobs {} {
-        set out {}
-        dict for {job state} $JobState {
-            if {$state in {running paused rate_limited}} { lappend out $job }
-        }
-        return $out
-    }
-    method queued_jobs {} {
-        set out {}
-        dict for {job state} $JobState {
-            if {$state eq "queued"} { lappend out $job }
-        }
-        return $out
-    }
-    method all_jobs {} { return [dict keys $JobState] }
-    method is_queue_paused {} { return $QueuePaused }
-    method jobs_cap {} { return $Jobs }
-    method is_kind_held {kind} { return [dict exists $HeldKinds $kind] }
-    method launched_count {} { return $Launched }
-
-    # set_kind_cap - a per-kind concurrency sub-cap inside the global Jobs
-    # cap. A job of this kind posts only while fewer than <cap> of its kind
-    # are active. The default cap is Jobs (no extra limit). This is what
-    # lets one serial kind share a pool with parallel ones without a second
-    # pool.
-    method set_kind_cap {kind cap} { dict set KindCap $kind $cap }
-
-    # set_kind_pace - keep at least ms between successive launches of a
-    # kind. Its jobs wait in the queue until the floor clears; other kinds
-    # launch around them.
-    method set_kind_pace {kind ms} { dict set KindPace $kind $ms }
-
-    # set_count_cap - stop launching after n launches in the pool's
-    # lifetime, firing count-cap-reached once, when the spent budget first
-    # holds a job back. 0 lifts the cap. A fresh cap re-arms the announce.
-    method set_count_cap {n} {
-        set CountCap $n
-        set CountAnnounced 0
-        my _try_post_next
-    }
-
-    # hold_kind - stop a kind from launching while its running jobs finish
-    # undisturbed. The cap underneath is untouched. release_kind brings it
-    # back and drains what piled up.
-    method hold_kind {kind} {
-        dict set HeldKinds $kind 1
-        catch {dict unset HeldAnnounced $kind}
-    }
-    method release_kind {kind} {
-        if {![dict exists $HeldKinds $kind]} return
-        dict unset HeldKinds $kind
-        catch {dict unset HeldAnnounced $kind}
-        my _fire kind-released $kind
-        my _try_post_next
-    }
-
-    method _active_count_for_kind {kind} {
-        set n 0
-        foreach job [my active_jobs] {
-            if {[dict get $JobMeta $job kind] eq $kind} { incr n }
-        }
-        return $n
-    }
-
-    # ─── Mutators ────────────────────────────────────────────────────
-
-    # register - remap a kind to a command prefix in the worker
-    # interpreters. An unregistered kind runs the command of its own name.
-    method register {kind cmdprefix} { dict set Reg $kind $cmdprefix }
-
-    # enqueue - register a job. kind names the proc that runs it and is the
-    # axis the per-kind cap, pacing, and holds work on; opts is the dict
-    # that proc receives. -priority (an integer, default 0) orders the queue
-    # high-first, first-in first-out within a level; the physical controls
-    # still gate each launch.
-    method enqueue {job kind opts args} {
-        if {[dict exists $JobState $job]} {
-            my _log "enqueue: job $job already present (state [dict get $JobState $job]); ignoring"
-            return
-        }
-        set priority 0
-        foreach {opt val} $args {
-            switch -- $opt {
-                -priority { set priority $val }
-                default   { error "enqueue: unknown option $opt" }
-            }
-        }
-        if {![string is integer -strict $priority]} {
-            error "enqueue: -priority must be an integer, got '$priority'"
-        }
-        dict set JobState $job queued
-        dict set JobMeta  $job [dict create \
-            kind       $kind \
-            opts       $opts \
-            priority   $priority \
-            posted_at  [clock milliseconds] \
-            started_at ""]
-        my _queue_insert $job
-        my _fire job-state $job queued
-        my _try_post_next
-    }
-
-    # _queue_insert - place a job in the queue by priority then arrival: a
-    # higher priority sits ahead, equal priorities keep first-in first-out.
-    # The walk reads the queue in this order, so priority shapes which job
-    # the physical controls weigh first, not whether they apply.
-    method _queue_insert {job} {
-        set p [dict get $JobMeta $job priority]
-        set at [llength $Queue]
-        for {set i 0} {$i < [llength $Queue]} {incr i} {
-            if {[dict get $JobMeta [lindex $Queue $i] priority] < $p} {
-                set at $i
-                break
-            }
-        }
-        set Queue [linsert $Queue $at $job]
-    }
-
-    # cancel - a queued job drops before it posts; a running job gets the
-    # cancel sentinel and reports back when the worker next checks. A paused
-    # job's pause loop exits on the sentinel, into the post-pause check.
-    method cancel {job} {
-        if {![dict exists $JobState $job]} return
-        set s [dict get $JobState $job]
-        if {$s eq "queued"} {
-            set idx [lsearch -exact $Queue $job]
-            if {$idx >= 0} { set Queue [lreplace $Queue $idx $idx] }
-            my _set_state $job cancelled
-            return
-        }
-        if {$s in $Terminal} return
-        tsv::set $Sentinels $job.cancel 1
-    }
-
-    method pause_job {job} {
-        if {![dict exists $JobState $job]} return
-        if {[dict get $JobState $job] in $Terminal} return
-        tsv::set $Sentinels $job.pause 1
-    }
-    method resume_job {job} {
-        if {![dict exists $JobState $job]} return
-        catch {tsv::unset $Sentinels $job.pause}
-    }
-    method pause_queue {} { set QueuePaused 1; my _fire queue-paused }
-    method resume_queue {} {
-        set QueuePaused 0
-        my _fire queue-resumed
-        my _try_post_next
-    }
-
-    # prune_missing - drop every job whose key is not in $valid_jobs. A
-    # caller that recomputes the set of jobs it still wants uses this to
-    # shed the rest in one call. Active jobs (running/paused/rate_limited)
-    # keep their state: they own a slot and will reach a terminal report on
-    # their own. Only terminal or not-yet-posted jobs are collectable.
-    method prune_missing {valid_jobs} {
-        set valid [dict create]
-        foreach r $valid_jobs { dict set valid $r 1 }
-        set dropped {}
-        dict for {job state} $JobState {
-            if {[dict exists $valid $job]} continue
-            if {$state in {running paused rate_limited}} continue
-            lappend dropped $job
-        }
-        foreach job $dropped {
-            dict unset JobState $job
-            catch {dict unset JobMeta  $job}
-            # Reap, not just forget: a dropped job may still hold an unretrieved
-            # tpool result (a completion that pruned before its own report, or a
-            # cancel routed through a caller that prunes on the state event), so
-            # get it here rather than leak the record.
-            my _reap_post $job
-            set idx [lsearch -exact $Queue $job]
-            if {$idx >= 0} { set Queue [lreplace $Queue $idx $idx] }
-            catch {tsv::unset $Sentinels $job.cancel}
-            catch {tsv::unset $Sentinels $job.pause}
-        }
-        return [llength $dropped]
-    }
-
-    # requeue - move a terminal job back to queued for a retry, clearing any
-    # prior sentinel.
-    method requeue {job} {
-        if {![dict exists $JobState $job]} return
-        if {[dict get $JobState $job] ni $Terminal} return
+    method SignalCancel {job state} { tsv::set $Sentinels $job.cancel 1 }
+    method SignalPause {job} { tsv::set $Sentinels $job.pause 1 }
+    method SignalResume {job state} { catch {tsv::unset $Sentinels $job.pause} }
+    method ClearSignals {job} {
         catch {tsv::unset $Sentinels $job.cancel}
         catch {tsv::unset $Sentinels $job.pause}
-        dict set JobMeta $job started_at ""
-        my _set_state $job queued
-        my _queue_insert $job
-        my _try_post_next
     }
 
-    # ─── Worker verb → pool reports ──────────────────────────────────
-
-    method on_phase {job phase} {
-        if {![my _expect_active $job phase]} return
-        my _fire job-phase $job $phase
-    }
-    method on_progress {job text} {
-        if {![my _expect_active $job progress]} return
-        my _fire job-progress $job $text
-    }
-    method on_done {job {result {}}} {
-        if {![my _expect $job done {running paused rate_limited}]} return
-        my _set_state $job done
-        my _reap_post $job
-        my _fire job-done $job $result
-        my _try_post_next
-    }
-    method on_failed {job reason} {
-        if {![my _expect $job failed {running paused rate_limited}]} return
-        my _set_state $job failed
-        my _reap_post $job
-        my _fire job-failed $job $reason
-        my _try_post_next
-    }
-    method on_cancelled {job} {
-        # rate_limited is cancellable too: a job waiting out an external
-        # limit still checkpoints, and its cancel must free the slot rather
-        # than strand the job in rate_limited with the report refused.
-        if {![my _expect $job cancelled {running paused rate_limited}]} return
-        my _set_state $job cancelled
-        my _reap_post $job
-        catch {tsv::unset $Sentinels $job.cancel}
-        my _try_post_next
-    }
-    method on_rate_limited {job until} {
-        if {![my _expect $job rate_limited running]} return
-        my _set_state $job rate_limited
-        my _fire job-rate-limited $job $until
-    }
-    method on_rate_limit_cleared {job} {
-        if {![my _expect $job rate_limit_cleared rate_limited]} return
-        my _set_state $job running
-        my _fire job-rate-limit-cleared $job
-    }
-    method on_paused {job} {
-        if {![my _expect $job paused running]} return
-        my _set_state $job paused
-        my _fire job-paused $job
-    }
-    method on_resumed {job} {
-        if {![my _expect $job resumed paused]} return
-        my _set_state $job running
-        my _fire job-resumed $job
-    }
-
-    # ─── Internals ───────────────────────────────────────────────────
-
-    # _try_post_next - walk the queue in order, posting any job that clears
-    # every admission control. State flips to running at post time, not on a
-    # later report, so the cap math reads straight from the state map and
-    # there is no queued/running gap to race. The controls fold in per job:
-    # the lifetime count cap first (nothing more launches once it is hit),
-    # then the global cap (stop and keep the tail), a held kind (announce
-    # once, keep queued, scan on so other kinds post), the per-kind cap, the
-    # pacing floor (track the soonest wait and arm one coalesced re-drain),
-    # and the admission gate. A job blocked by its kind alone stays queued
-    # while the scan continues, so other kinds still post.
-    method _try_post_next {} {
-        if {$QueuePaused} return
-        my forget $PaceTimer
-        set PaceTimer ""
-        set soonest ""
-        set now [clock milliseconds]
-        set new_queue {}
-        set i 0
-        set n [llength $Queue]
-        while {$i < $n} {
-            set job [lindex $Queue $i]
-            incr i
-            if {![dict exists $JobState $job]} continue
-            if {[dict get $JobState $job] ne "queued"} continue
-
-            if {$CountCap > 0 && $Launched >= $CountCap} {
-                if {!$CountAnnounced} {
-                    set CountAnnounced 1
-                    my _fire count-cap-reached
-                }
-                lappend new_queue $job
-                while {$i < $n} { lappend new_queue [lindex $Queue $i]; incr i }
-                break
-            }
-            if {[llength [my active_jobs]] >= $Jobs} {
-                lappend new_queue $job
-                while {$i < $n} { lappend new_queue [lindex $Queue $i]; incr i }
-                break
-            }
-            set meta [dict get $JobMeta $job]
-            set kind [dict get $meta kind]
-            if {[dict exists $HeldKinds $kind]} {
-                if {![dict exists $HeldAnnounced $kind]} {
-                    dict set HeldAnnounced $kind 1
-                    my _fire kind-held $kind
-                }
-                lappend new_queue $job
-                continue
-            }
-            set kcap [expr {[dict exists $KindCap $kind]
-                            ? [dict get $KindCap $kind] : $Jobs}]
-            if {[my _active_count_for_kind $kind] >= $kcap} {
-                lappend new_queue $job
-                continue
-            }
-            if {[dict exists $KindPace $kind] && [dict exists $LastLaunch $kind]} {
-                set wait [expr {[dict get $KindPace $kind]
-                                - ($now - [dict get $LastLaunch $kind])}]
-                if {$wait > 0} {
-                    if {$soonest eq "" || $wait < $soonest} { set soonest $wait }
-                    lappend new_queue $job
-                    continue
-                }
-            }
-            set opts [dict get $meta opts]
-            if {$PreLaunchCallback ne ""} {
-                set verdict ""
-                catch {set verdict [{*}$PreLaunchCallback $job $kind]}
-                if {$verdict eq "abort"} {
-                    my _set_state $job cancelled
-                    continue
-                } elseif {$verdict eq "defer"} {
-                    lappend new_queue $job
-                    continue
-                }
-            }
-            set cmdprefix [expr {[dict exists $Reg $kind]
-                                 ? [dict get $Reg $kind] : $kind}]
-            dict set LastLaunch $kind [clock milliseconds]
-            incr Launched
-            dict set JobMeta $job started_at [clock milliseconds]
-            my _set_state $job running
-            dict set PostId $job [tpool::post -nowait $Pool \
-                [list ::jobpool::worker::run $cmdprefix $job $opts]]
-        }
-        set Queue $new_queue
-        if {$soonest ne ""} {
-            set PaceTimer [my later $soonest \
-                [list [namespace which my] _try_post_next]]
-        }
-    }
-
-    # _expect - the job's state must be one of allowed_from for this
-    # transition; log and refuse otherwise.
-    method _expect {job transition allowed_from} {
-        if {![dict exists $JobState $job]} {
-            my _log "$transition for unknown job $job; dropping"
-            return 0
-        }
-        set cur [dict get $JobState $job]
-        if {$cur ni $allowed_from} {
-            my _log "$transition for job $job in state $cur (allowed: [join $allowed_from {, }]); dropping"
-            return 0
-        }
-        return 1
-    }
-    # _expect_active - an informational report is allowed in any
-    # non-terminal state.
-    method _expect_active {job mtype} {
-        if {![dict exists $JobState $job]} {
-            my _log "$mtype for unknown job $job; dropping"
-            return 0
-        }
-        if {[dict get $JobState $job] in $Terminal} {
-            my _log "$mtype for job $job in terminal state [dict get $JobState $job]; dropping"
-            return 0
-        }
-        return 1
-    }
-    method _set_state {job to} {
-        dict set JobState $job $to
-        my _fire job-state $job $to
-    }
-    method _log {msg} {
-        catch {${LogService}::warn $msg}
-        if {$LogCallback ne ""} { {*}$LogCallback "jobpool: $msg" }
-    }
-
-    # _reap_post - retrieve and discard the worker's tpool result so the thread
-    # pool does not keep one result record per finished job for the pool's whole
-    # life. The real result rode home on the worker's report (thread::send); the
-    # run has returned or is about to, so the get does not block meaningfully.
-    method _reap_post {job} {
+    # Reap - retrieve and discard the worker's tpool result so the thread
+    # pool does not keep one result record per finished job for the pool's
+    # whole life. The real result rode home on the worker's report
+    # (thread::send); the run has returned or is about to, so the get does
+    # not block meaningfully.
+    method Reap {job} {
         if {[dict exists $PostId $job]} {
             catch {tpool::get $Pool [dict get $PostId $job]}
             dict unset PostId $job
