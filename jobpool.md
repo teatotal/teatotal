@@ -86,7 +86,7 @@ Three admission controls sit in front of the launch, on the same kind axis as th
 
 ## CHOOSING BETWEEN THE TWINS
 
-jobpool and jobloop are one design over two runtimes: the same state machine, pool API, events, and worker verbs. jobpool runs each job in a pre-spawned worker thread. Reach for it when the work burns CPU or calls a blocking library that would freeze an event loop; it costs the `Thread` dependency and isolated worker interpreters seeded by `-init`. jobloop runs each job as a coroutine on the event loop you already have. Reach for it when the work is mostly waiting, on subprocess pipes, sockets, or timers: a thread would idle on a read, and the loop multiplexes many waits in one interpreter with no marshalling. A worker's reporting and cancellation code moves between the twins unchanged, one `namespace path` line naming which twin it reports to; its waits are rewritten to the runtime, blocking reads in jobpool, fileevent-and-yield in jobloop, and its definition moves between the `-init` script and the calling interpreter. Parallel CPU takes jobpool; concurrent I/O takes jobloop.
+jobpool and jobloop are one design over two runtimes: the same state machine, pool API, events, and worker verbs. The sharing is literal: the queue, state machine, admission controls, and event stream live in one engine class, `::jobloop::engine`, published by the jobloop module, and jobpool subclasses it over worker threads. jobpool runs each job in a pre-spawned worker thread. Reach for it when the work burns CPU or calls a blocking library that would freeze an event loop; it costs the `Thread` dependency and isolated worker interpreters seeded by `-init`. jobloop runs each job as a coroutine on the event loop you already have. Reach for it when the work is mostly waiting, on subprocess pipes, sockets, or timers: a thread would idle on a read, and the loop multiplexes many waits in one interpreter with no marshalling. A worker's reporting and cancellation code moves between the twins unchanged, one `namespace path` line naming which twin it reports to; its waits are rewritten to the runtime, blocking reads in jobpool, fileevent-and-yield in jobloop, and its definition moves between the `-init` script and the calling interpreter. Parallel CPU takes jobpool; concurrent I/O takes jobloop.
 
 ## NOTES
 
@@ -94,7 +94,7 @@ The sentinel is a `tsv` shared array private to each pool, so two pools in one p
 
 ## REQUIREMENTS
 
-Tcl 9, the `Thread` package for the pool (`tpool::`), and `leash` from this shelf for the pacing timers. No Tk.
+Tcl 9, the `Thread` package for the pool (`tpool::`), and `jobloop` from this shelf, whose engine class this module builds on (it brings `leash` with it). No Tk.
 
 ## KEYWORDS
 
