@@ -470,6 +470,26 @@ set i [lindex $is 0]
 check extra-stamped Ada [dict get $i contact_name]
 check extra-engine-wins version_unsupported [dict get $i code]
 
+# Engine field names are reserved outright: an -extra pair named key or
+# owner is dropped even on issues that do not emit that field themselves
+# (a bad_node emits neither; unknown_key emits key but not owner).
+set B [yamlmuster new]
+$B load {level root -keys {a}
+child root items list item
+level item -keys {b}
+rule vocab root
+rule vocab item}
+set is [$B validate {a 1 items {{b 1 c 2} {odd}}} -extra {key INJ owner INJ tag T}]
+set leaked 0
+foreach i $is {
+    if {[dict getdef $i key ""] eq "INJ" || [dict getdef $i owner ""] eq "INJ"} {
+        incr leaked
+    }
+}
+check extra-reserved-names-never-leak 0 $leaked
+check extra-nonreserved-still-stamped T [dict get [lindex $is 0] tag]
+$B destroy
+
 # A predicate registered after a load serves the next load; the compiled
 # rules are untouched.
 set L [yamlmuster new]

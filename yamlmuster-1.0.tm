@@ -678,7 +678,7 @@ oo::class create yamlmuster {
     # Error-severity issues count toward -limit; hitting it unwinds the
     # walk through the _LIMIT throw validate traps.
     method Emit {fields} {
-        set issue $WExtra
+        set issue [dict remove $WExtra severity code message path level key owner]
         dict for {k v} $fields { dict set issue $k $v }
         lappend WIssues $issue
         if {[dict get $fields severity] eq "error"} {
