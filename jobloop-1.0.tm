@@ -26,6 +26,19 @@ package provide jobloop 1.0
 #   $loop enqueue job42 fetch {url http://example.com/feed}
 #   $loop cancel job42                     ;# reaches it even mid-wait
 #
+# THE ENGINE (::jobloop::engine)
+#
+# Everything below except the coroutines lives in ::jobloop::engine, the
+# runtime-independent lifecycle engine this module publishes: the queue,
+# the state machine and its guards, the admission controls, the event
+# stream. jobloop is that engine run over coroutines. jobpool, its own
+# module on this shelf, subclasses the same engine over worker threads. A
+# runtime answers six methods: Launch starts an admitted job's body;
+# SignalCancel, SignalPause, and SignalResume carry a flag to wherever the
+# running body can observe it; ClearSignals retracts both flags when a job
+# reaches a terminal state or is pruned; Reap (a no-op by default)
+# reclaims any per-launch record after a terminal report.
+#
 # THE WORKERS
 #
 # A job's kind names the command that runs it, called as `<kind> <job>
@@ -147,18 +160,20 @@ namespace eval ::jobloop::worker {
     proc failed {job reason}       { [_pool] on_failed $job $reason }
 }
 
-oo::class create jobloop {
+# ::jobloop::engine - the runtime-independent lifecycle engine (see THE
+# ENGINE above). It owns every job's record and decides what launches next;
+# a runtime subclass owns how a body runs and how a signal reaches it.
+oo::class create ::jobloop::engine {
     mixin leash
 
     variable Jobs KindCap
     variable Queue JobState JobMeta
     variable QueuePaused
-    variable LogCallback LogService PreLaunchCallback Subs
+    variable LogCallback LogService LogName PreLaunchCallback Subs
     variable Terminal Reg
     variable KindPace LastLaunch PaceTimer
     variable HeldKinds HeldAnnounced
     variable CountCap Launched CountAnnounced
-    variable Coros CancelFlag PauseFlag Serial
 
     constructor {jobs args} {
         set Jobs             $jobs
@@ -179,34 +194,29 @@ oo::class create jobloop {
         set CountCap         0
         set Launched         0
         set CountAnnounced   0
-        set Coros            [dict create]
-        set CancelFlag       [dict create]
-        set PauseFlag        [dict create]
-        set Serial           0
 
+        # The runtime leaf names itself (LogName) before chaining here; a
+        # subclass that does not is named by its class.
+        if {![info exists LogName]} {
+            set LogName [namespace tail [info object class [self]]]
+        }
         set LogCallback ""
-        set LogService  jobloop
+        set LogService  $LogName
         foreach {opt val} $args {
             switch -- $opt {
                 -log     { set LogCallback $val }
                 -logger  { set LogService  $val }
-                default  { error "jobloop: unknown option $opt" }
+                default  { error "$LogName: unknown option $opt" }
             }
         }
     }
 
-    destructor {
-        # leash (the mixin) has already cancelled the pool's timers and, in
-        # deleting the instance namespace, reaps every coroutine armed there.
-        # Drop this pool's keys from the shared Owner dict so a torn-down
-        # pool leaves nothing behind. Collect the keys before unsetting, not
-        # during the walk.
-        set drop {}
-        dict for {co owner} $::jobloop::Owner {
-            if {$owner eq [self]} { lappend drop $co }
-        }
-        foreach co $drop { dict unset ::jobloop::Owner $co }
-    }
+    # ─── The runtime seam ────────────────────────────────────────────
+    # Launch, SignalCancel, SignalPause, SignalResume, and ClearSignals
+    # have no default: an engine without a runtime can neither start a body
+    # nor reach one. Reap defaults to nothing; a runtime with per-launch
+    # records to reclaim overrides it.
+    method Reap {job} {}
 
     # ─── Subscription ────────────────────────────────────────────────
     method subscribe {event cb} { dict lappend Subs $event $cb }
@@ -218,9 +228,9 @@ oo::class create jobloop {
 
     # set_pre_launch_callback - a synchronous admission gate fired just
     # before each launch, as `{*}$cb $job $kind`. "abort" cancels the job
-    # before any coroutine runs; "defer" leaves it queued for a later
-    # walk, which any enqueue, completion, release, resume, or pace
-    # re-drain triggers; anything else admits it.
+    # before any body runs; "defer" leaves it queued for a later walk,
+    # which any enqueue, completion, release, resume, or pace re-drain
+    # triggers; anything else admits it.
     method set_pre_launch_callback {cb} { set PreLaunchCallback $cb }
 
     # ─── Accessors ───────────────────────────────────────────────────
@@ -265,7 +275,9 @@ oo::class create jobloop {
 
     # set_kind_cap - a per-kind concurrency sub-cap inside the global Jobs
     # cap. A job of this kind launches only while fewer than <cap> of its
-    # kind are active. The default cap is Jobs (no extra limit).
+    # kind are active. The default cap is Jobs (no extra limit). This is
+    # what lets one serial kind share a pool with parallel ones without a
+    # second pool.
     method set_kind_cap {kind cap} { dict set KindCap $kind $cap }
 
     # set_kind_pace - keep at least ms between successive launches of a
@@ -359,9 +371,9 @@ oo::class create jobloop {
         set Queue [linsert $Queue $at $job]
     }
 
-    # cancel - a queued job drops before it launches; a running job gets the
-    # cancel flag and unwinds at its next checkpoint. A paused job is resumed
-    # straight into the post-pause cancel check.
+    # cancel - a queued job drops before it launches; a live job gets the
+    # cancel signal and unwinds at its next checkpoint. A paused job takes
+    # the cancel at its park.
     method cancel {job} {
         if {![dict exists $JobState $job]} return
         set s [dict get $JobState $job]
@@ -372,20 +384,17 @@ oo::class create jobloop {
             return
         }
         if {$s in $Terminal} return
-        dict set CancelFlag $job 1
-        if {$s eq "paused"} { my _resume_coro $job }
+        my SignalCancel $job $s
     }
 
     method pause_job {job} {
         if {![dict exists $JobState $job]} return
         if {[dict get $JobState $job] in $Terminal} return
-        dict set PauseFlag $job 1
+        my SignalPause $job
     }
     method resume_job {job} {
         if {![dict exists $JobState $job]} return
-        set state [dict get $JobState $job]
-        catch {dict unset PauseFlag $job}
-        if {$state eq "paused"} { my _resume_coro $job }
+        my SignalResume $job [dict get $JobState $job]
     }
     method pause_queue {} { set QueuePaused 1; my _fire queue-paused }
     method resume_queue {} {
@@ -394,10 +403,11 @@ oo::class create jobloop {
         my _try_launch
     }
 
-    # prune_missing - drop every job whose key is not in $valid_jobs. Active
-    # jobs (running/paused/rate_limited) keep their state: they own a slot
-    # and will reach a terminal report on their own. Only terminal or
-    # not-yet-launched jobs are collectable.
+    # prune_missing - drop every job whose key is not in $valid_jobs. A
+    # caller that recomputes the set of jobs it still wants uses this to
+    # shed the rest in one call. Active jobs (running/paused/rate_limited)
+    # keep their state: they own a slot and will reach a terminal report on
+    # their own. Only terminal or not-yet-launched jobs are collectable.
     method prune_missing {valid_jobs} {
         set valid [dict create]
         foreach r $valid_jobs { dict set valid $r 1 }
@@ -410,21 +420,24 @@ oo::class create jobloop {
         foreach job $dropped {
             dict unset JobState $job
             catch {dict unset JobMeta $job}
-            catch {dict unset CancelFlag $job}
-            catch {dict unset PauseFlag $job}
+            my ClearSignals $job
+            # Reap, not just forget: a dropped job may still hold an
+            # unretrieved per-launch record (a completion that pruned before
+            # its own report, or a cancel routed through a caller that
+            # prunes on the state event), so reclaim it here rather than
+            # leak the record.
+            my Reap $job
             set idx [lsearch -exact $Queue $job]
             if {$idx >= 0} { set Queue [lreplace $Queue $idx $idx] }
         }
         return [llength $dropped]
     }
 
-    # requeue - move a terminal job back to queued for a retry, clearing any
-    # prior flag.
+    # requeue - move a terminal job back to queued for a retry. The
+    # terminal transition already retracted any cancel or pause signal.
     method requeue {job} {
         if {![dict exists $JobState $job]} return
         if {[dict get $JobState $job] ni $Terminal} return
-        catch {dict unset CancelFlag $job}
-        catch {dict unset PauseFlag $job}
         dict set JobMeta $job started_at ""
         my _set_state $job queued
         my _queue_insert $job
@@ -444,12 +457,14 @@ oo::class create jobloop {
     method on_done {job {result {}}} {
         if {![my _expect $job done {running paused rate_limited}]} return
         my _set_state $job done
+        my Reap $job
         my _fire job-done $job $result
         my _try_launch
     }
     method on_failed {job reason} {
         if {![my _expect $job failed {running paused rate_limited}]} return
         my _set_state $job failed
+        my Reap $job
         my _fire job-failed $job $reason
         my _try_launch
     }
@@ -459,6 +474,7 @@ oo::class create jobloop {
         # than strand the job in rate_limited with the report refused.
         if {![my _expect $job cancelled {running paused rate_limited}]} return
         my _set_state $job cancelled
+        my Reap $job
         my _try_launch
     }
     method on_rate_limited {job until} {
@@ -482,105 +498,17 @@ oo::class create jobloop {
         my _fire job-resumed $job
     }
 
-    # ─── Coroutine mechanics ─────────────────────────────────────────
-
-    # _checkpoint - the pool side of the checkpoint verb, running in the
-    # job's own coroutine. A pending cancel reports the cancellation and
-    # raises JOBLOOP CANCEL, which RunJob traps; a pending pause reports it,
-    # parks the coroutine on a yield, and on resume re-checks cancel first,
-    # so cancelling a paused job takes at the park. Exported so the verb, a
-    # plain command outside the object, can reach it.
-    method _checkpoint {job} {
-        if {[dict exists $CancelFlag $job]} {
-            my on_cancelled $job
-            return -code error -errorcode {JOBLOOP CANCEL} cancelled
-        }
-        if {[dict exists $PauseFlag $job]} {
-            my on_paused $job
-            if {[dict get $JobState $job] ne "paused"} return
-            yield
-            if {[dict exists $CancelFlag $job]} {
-                my on_cancelled $job
-                return -code error -errorcode {JOBLOOP CANCEL} cancelled
-            }
-            my on_resumed $job
-        }
-    }
-    export _checkpoint
-
-    method _resume_coro {job} {
-        if {![dict exists $Coros $job]} return
-        set co [dict get $Coros $job]
-        if {![llength [info commands $co]]} return
-        # A subscriber that resumes or cancels the job from within the report
-        # that fired inside this very coroutine would call a coroutine already
-        # on the stack. Defer to the next loop turn, by when it has parked.
-        if {[info coroutine] eq $co} {
-            my later 0 [list [namespace which my] _resume_coro $job]
-            return
-        }
-        $co
-    }
-
-    # _start - fired by the launch's 0 ms timer, off the queue walk so no
-    # worker code runs inline. A cancel arriving in the gap reports the
-    # cancellation instead of starting the body.
-    method _start {job} {
-        if {![dict exists $JobState $job]} return
-        if {[dict get $JobState $job] ne "running"} return
-        if {[dict exists $CancelFlag $job]} {
-            my on_cancelled $job
-            return
-        }
-        set name co[incr Serial]
-        set co [info object namespace [self]]::$name
-        # Key Owner before creating the coroutine: the body runs to its first
-        # yield the moment `coro` creates it, and may call a verb at once.
-        dict set ::jobloop::Owner $co [self]
-        dict set Coros $job $co
-        my coro $name [namespace which my] RunJob $job
-    }
-
-    # RunJob - the coroutine body. It runs the worker command and frees the
-    # slot however that ends: a bare return reports done empty, an uncaught
-    # error reports failed, the cancel unwind is trapped. The finally clears
-    # the coroutine's Owner key and the Coros entry.
-    method RunJob {job} {
-        set co [info coroutine]
-        try {
-            set meta [dict get $JobMeta $job]
-            set kind [dict get $meta kind]
-            set opts [dict get $meta opts]
-            set cmdprefix [expr {[dict exists $Reg $kind]
-                                 ? [dict get $Reg $kind] : $kind}]
-            try {
-                {*}$cmdprefix $job $opts
-                # The fallback done fires only for a body that reported none
-                # of its own, so a body that already reported draws no
-                # "dropping" diagnostic from the refused second report.
-                if {[my state $job] ni $Terminal} { my on_done $job }
-            } trap {JOBLOOP CANCEL} {} {
-            } on error {msg} {
-                my on_failed $job $msg
-            }
-        } finally {
-            catch {dict unset ::jobloop::Owner $co}
-            catch {dict unset Coros $job}
-        }
-    }
-
     # ─── Internals ───────────────────────────────────────────────────
 
     # _try_launch - walk the queue in order, launching any job that clears
-    # every admission control. State flips to running at launch time, before
-    # the coroutine starts, so the cap math reads straight from the state map
-    # and there is no queued/running gap to race; the body itself is armed by
-    # a 0 ms timer so the walk never runs worker code inline. The controls
-    # fold in per job: the lifetime count cap first (nothing more launches
-    # once it is hit), then the global cap (stop and keep the tail), a held
-    # kind (announce once, keep queued, scan on so other kinds launch), the
-    # per-kind cap, the pacing floor (track the soonest wait and arm one
-    # coalesced re-drain), and the admission gate.
+    # every admission control. State flips to running at launch time, so
+    # the cap math reads straight from the state map and there is no
+    # queued/running gap to race; how the body then starts is the runtime's
+    # Launch. The controls fold in per job: the lifetime count cap first
+    # (nothing more launches once it is hit), then the global cap (stop and
+    # keep the tail), a held kind (announce once, keep queued, scan on so
+    # other kinds launch), the per-kind cap, the pacing floor (track the
+    # soonest wait and arm one coalesced re-drain), and the admission gate.
     method _try_launch {} {
         if {$QueuePaused} return
         my forget $PaceTimer
@@ -650,7 +578,7 @@ oo::class create jobloop {
             incr Launched
             dict set JobMeta $job started_at [clock milliseconds]
             my _set_state $job running
-            my later 0 [list [namespace which my] _start $job]
+            my Launch $job
         }
         set Queue $new_queue
         if {$soonest ne ""} {
@@ -688,14 +616,150 @@ oo::class create jobloop {
     }
     method _set_state {job to} {
         dict set JobState $job $to
-        if {$to in $Terminal} {
-            catch {dict unset CancelFlag $job}
-            catch {dict unset PauseFlag $job}
-        }
+        if {$to in $Terminal} { my ClearSignals $job }
         my _fire job-state $job $to
     }
     method _log {msg} {
         catch {${LogService}::warn $msg}
-        if {$LogCallback ne ""} { {*}$LogCallback "jobloop: $msg" }
+        if {$LogCallback ne ""} { {*}$LogCallback "$LogName: $msg" }
+    }
+}
+
+# jobloop - the engine run over coroutines: each admitted job's body is a
+# coroutine this pool owns, its signals plain dicts read in-interpreter,
+# its pause park a yield.
+oo::class create jobloop {
+    superclass ::jobloop::engine
+
+    variable JobState JobMeta Terminal Reg LogName
+    variable Coros CancelFlag PauseFlag Serial
+
+    constructor {jobs args} {
+        set LogName    jobloop
+        set Coros      [dict create]
+        set CancelFlag [dict create]
+        set PauseFlag  [dict create]
+        set Serial     0
+        next $jobs {*}$args
+    }
+
+    destructor {
+        # leash (the mixin) has already cancelled the pool's timers and, in
+        # deleting the instance namespace, reaps every coroutine armed there.
+        # Drop this pool's keys from the shared Owner dict so a torn-down
+        # pool leaves nothing behind. Collect the keys before unsetting, not
+        # during the walk.
+        set drop {}
+        dict for {co owner} $::jobloop::Owner {
+            if {$owner eq [self]} { lappend drop $co }
+        }
+        foreach co $drop { dict unset ::jobloop::Owner $co }
+    }
+
+    # ─── The runtime seam, over coroutines ───────────────────────────
+
+    # Launch - arm the body on a 0 ms timer, off the queue walk, so no
+    # worker code runs inline.
+    method Launch {job} {
+        my later 0 [list [namespace which my] _start $job]
+    }
+    method SignalCancel {job state} {
+        dict set CancelFlag $job 1
+        if {$state eq "paused"} { my _resume_coro $job }
+    }
+    method SignalPause {job} { dict set PauseFlag $job 1 }
+    method SignalResume {job state} {
+        catch {dict unset PauseFlag $job}
+        if {$state eq "paused"} { my _resume_coro $job }
+    }
+    method ClearSignals {job} {
+        catch {dict unset CancelFlag $job}
+        catch {dict unset PauseFlag $job}
+    }
+
+    # ─── Coroutine mechanics ─────────────────────────────────────────
+
+    # _checkpoint - the pool side of the checkpoint verb, running in the
+    # job's own coroutine. A pending cancel reports the cancellation and
+    # raises JOBLOOP CANCEL, which RunJob traps; a pending pause reports it,
+    # parks the coroutine on a yield, and on resume re-checks cancel first,
+    # so cancelling a paused job takes at the park. Exported so the verb, a
+    # plain command outside the object, can reach it.
+    method _checkpoint {job} {
+        if {[dict exists $CancelFlag $job]} {
+            my on_cancelled $job
+            return -code error -errorcode {JOBLOOP CANCEL} cancelled
+        }
+        if {[dict exists $PauseFlag $job]} {
+            my on_paused $job
+            if {[dict get $JobState $job] ne "paused"} return
+            yield
+            if {[dict exists $CancelFlag $job]} {
+                my on_cancelled $job
+                return -code error -errorcode {JOBLOOP CANCEL} cancelled
+            }
+            my on_resumed $job
+        }
+    }
+    export _checkpoint
+
+    method _resume_coro {job} {
+        if {![dict exists $Coros $job]} return
+        set co [dict get $Coros $job]
+        if {![llength [info commands $co]]} return
+        # A subscriber that resumes or cancels the job from within the report
+        # that fired inside this very coroutine would call a coroutine already
+        # on the stack. Defer to the next loop turn, by when it has parked.
+        if {[info coroutine] eq $co} {
+            my later 0 [list [namespace which my] _resume_coro $job]
+            return
+        }
+        $co
+    }
+
+    # _start - fired by the launch's 0 ms timer. A cancel arriving in the
+    # gap reports the cancellation instead of starting the body.
+    method _start {job} {
+        if {![dict exists $JobState $job]} return
+        if {[dict get $JobState $job] ne "running"} return
+        if {[dict exists $CancelFlag $job]} {
+            my on_cancelled $job
+            return
+        }
+        set name co[incr Serial]
+        set co [info object namespace [self]]::$name
+        # Key Owner before creating the coroutine: the body runs to its first
+        # yield the moment `coro` creates it, and may call a verb at once.
+        dict set ::jobloop::Owner $co [self]
+        dict set Coros $job $co
+        my coro $name [namespace which my] RunJob $job
+    }
+
+    # RunJob - the coroutine body. It runs the worker command and frees the
+    # slot however that ends: a bare return reports done empty, an uncaught
+    # error reports failed, the cancel unwind is trapped. The finally clears
+    # the coroutine's Owner key and the Coros entry.
+    method RunJob {job} {
+        set co [info coroutine]
+        try {
+            set meta [dict get $JobMeta $job]
+            set kind [dict get $meta kind]
+            set opts [dict get $meta opts]
+            set cmdprefix [expr {[dict exists $Reg $kind]
+                                 ? [dict get $Reg $kind] : $kind}]
+            try {
+                {*}$cmdprefix $job $opts
+                # The fallback done fires only for a body that reported none
+                # of its own, so a body that already reported draws no
+                # "dropping" diagnostic from the refused second report.
+                if {[my state $job] ni $Terminal} { my on_done $job }
+            } trap {JOBLOOP CANCEL} {} {
+            } on error {msg} {
+                my on_failed $job $msg
+            }
+        } finally {
+            catch {dict unset ::jobloop::Owner $co}
+            catch {dict unset Coros $job}
+        }
     }
 }
