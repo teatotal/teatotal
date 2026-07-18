@@ -56,8 +56,8 @@ proc ::searchfield::join_terms {terms} {
 # match in, and a strip of consumer-supplied pills. What the terms are matched
 # AGAINST - which corpus, at what cost, on which thread - is the owner's
 # business entirely: the field tokenizes what is typed, hands it over, and asks
-# nothing about it. It is one half of the shared query contract in
-# docs/query-contract.md, the half that owns the `terms`, `case` and `region`
+# nothing about it. It is one half of the shared query contract
+# (query-contract.md), the half that owns the `terms`, `case` and `region`
 # keys; the other half is the query builder, and neither knows the other.
 #
 # Vocabulary, and the whole of the widget's world view:
@@ -174,7 +174,7 @@ proc ::searchfield::join_terms {terms} {
 #   $sf set_fragment {terms {foo "bar baz"} case 1}
 #
 # Methods:
-#   The shared idiom (docs/query-contract.md):
+#   The shared idiom (query-contract.md):
 #   fragment              the current fragment: {terms <list> case 0|1
 #                         region <name>}, every key present, withheld terms
 #                         excluded.
