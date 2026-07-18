@@ -62,7 +62,7 @@ The shared idiom - **fragment**, **set_fragment** *frag*, **reset**, **publish**
 
 ## REQUIREMENTS
 
-Tcl 9 and Tk; the `-placeholder` hint needs Tk 9's ttk entry and is skipped without it. Uses [leash](../leash/leash.md), this repository's own module, so the debounce dies with the field. The typed half of the query contract; [querybuilder](../querybuilder/querybuilder.md) is the structured half.
+Tcl 9 and Tk. The floor comes from [leash](../leash/leash.md), this repository's own module, which the field uses so its debounce dies with the field; the field's own code asks no more than 8.6. The `-placeholder` hint is Tk 9's ttk entry option, and a Tk without it goes without the hint. The typed half of the query contract; [querybuilder](../querybuilder/querybuilder.md) is the structured half.
 
 ## KEYWORDS
 

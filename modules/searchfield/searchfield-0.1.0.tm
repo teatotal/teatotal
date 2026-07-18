@@ -264,8 +264,9 @@ proc ::searchfield::join_terms {terms} {
 #                  pill (between pills and within one, and after the strip).
 #                  Defaults {label 6 in 6 pick 2 case 6 pill 4}.
 #
-# Requires Tcl 9 and Tk (the -placeholder hint needs Tk 9's ttk entry, and is
-# skipped without it).
+# Requires Tcl 9 and Tk, the floor its leash dependency sets; the field's own
+# code asks no more than 8.6. The -placeholder hint is Tk 9's ttk entry
+# option, and a Tk without it simply goes without the hint.
 
 oo::class create ::searchfield::SearchField {
     mixin leash

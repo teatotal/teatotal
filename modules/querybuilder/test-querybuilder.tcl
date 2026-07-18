@@ -1,4 +1,4 @@
-#!/usr/bin/env wish
+#!/usr/bin/env wish9.0
 # The builder, driven through the widgets it builds: the chips' delete buttons, the
 # add rail, the inline editors, the disclosure. The facets here are colour, size,
 # weight, shape, note, tag and origin - a chip list with a per-value control, two
