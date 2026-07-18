@@ -1,6 +1,6 @@
 package require Tcl 9
 package require Tk
-package provide streamtree 1.1.0
+package provide streamtree 0.2.0
 
 namespace eval ::streamtree {}
 
@@ -138,14 +138,14 @@ namespace eval ::streamtree {}
 # a real change, and apply_attr_filters reapplies the active filters after a host
 # streams in new nodes. The popover rereads the roster each time it opens, so a value
 # added after it last drew appears the next open. Styles reach the controls by name
-# through -attrstyles (roles check, menu, popcheck, popbtn); a role left empty falls
+# through -attrstyles (roles check, menu, popcheck, popbtn, popframe); a role left empty falls
 # back to the stock ttk widget, and the module configures no style a host named.
 #
 # Stable paths and tags the attribute facility adds:
 #   attr-<id>              the text tag on a true bool's subject-prefix glyph.
 #   <frame>.attr_<id>      a filter control (checkbutton or menubutton) in the frame
 #                          the host handed build_filters.
-#   .streamtree_attrpop    the enum checklist popover toplevel, one at a time.
+#   .streamtree_attrpop    the enum checklist popdown, one at a time.
 
 # Coerce a {pos align ...} tab spec to strictly increasing positive stops,
 # which Tk requires. Guards the degenerate column geometry a too-narrow width
@@ -199,7 +199,7 @@ oo::class create ::streamtree::StreamTree {
     variable AttrOrder        ;# declared attribute ids, in declaration order
     variable AttrSpec         ;# id -> descriptor dict
     variable AttrFilter       ;# filterable id -> filter state (bool 0|1; enum excluded list)
-    variable AttrPopTop       ;# the enum checklist popover toplevel, or "" when none is open
+    variable AttrPopTop       ;# the enum checklist popdown, or "" when none is open
     variable AttrPopId        ;# the attribute the open popover filters
     variable AttrPopRoster    ;# the roster the open popover was built from, index-keyed
     variable AttrHidden       ;# set (dict id->1) of the nodes the attribute filter hid
@@ -308,7 +308,7 @@ oo::class create ::streamtree::StreamTree {
             autofollow 0 \
             motioncb "" \
             attrs [list] \
-            attrstyles [dict create check "" menu "" popcheck "" popbtn ""] \
+            attrstyles [dict create check "" menu "" popcheck "" popbtn "" popframe ""] \
             attrfiltercb ""]
     }
     method configure {args} {
@@ -1689,29 +1689,65 @@ oo::class create ::streamtree::StreamTree {
             {*}[my astyle_cfg menu]
         # A menubutton with no menu would raise on its class press binding, so the
         # instance binding opens the checklist and breaks before that binding runs.
-        bind $w <ButtonPress-1> [format {%s open_enum_popover %s; break} [self] $id]
+        bind $w <ButtonPress-1> "[list [self] open_enum_popover $id $w]; break"
         pack $w -side $side
     }
 
-    # The enum checklist: a stay-open transient toplevel, one checkbutton per roster
-    # value (checked = shown, cleared = excluded) plus select-all and select-none.
-    # It rereads the roster on every open, so a value the provider gained since the
-    # last open is offered now.
-    method open_enum_popover {id} {
+    # The enum checklist: a stay-open popdown under the menubutton, one
+    # checkbutton per roster value (checked = shown, cleared = excluded) plus
+    # select-all and select-none. It stays open across clicks so a reader flips
+    # several values in one visit, which a posted menu cannot offer (a menu
+    # unposts on every activation); everything else about it behaves as a
+    # combobox popdown does: undecorated, dismissed by a click outside, Escape,
+    # pressing the button again, or the window moving. It rereads the roster on
+    # every open, so a value the provider gained since the last open is offered
+    # now.
+    method open_enum_popover {id btn} {
         set p .streamtree_attrpop
-        if {[winfo exists $p]} { destroy $p }
+        if {[winfo exists $p]} {
+            set again [expr {$AttrPopId eq $id}]
+            my close_enum_popover
+            if {$again} return
+        }
         toplevel $p
+        wm withdraw $p
+        wm overrideredirect $p 1
         set AttrPopTop $p
         set AttrPopId $id
-        wm title $p [my attr_label $id]
-        wm transient $p [winfo toplevel $Top]
-        ttk::frame $p.f -padding 8
+        ttk::frame $p.f -padding 8 -relief solid -borderwidth 1 \
+            {*}[my astyle_cfg popframe]
         pack $p.f -fill both -expand 1
         my build_enum_checklist
-        bind $p <Escape> [list [self] close_enum_popover]
-        wm protocol $p WM_DELETE_WINDOW [list [self] close_enum_popover]
+        # Under the button, clamped to the screen's right edge.
         update idletasks
+        set x [winfo rootx $btn]
+        set y [expr {[winfo rooty $btn] + [winfo height $btn]}]
+        set maxx [expr {[winfo screenwidth $btn] - [winfo reqwidth $p]}]
+        if {$x > $maxx} { set x $maxx }
+        wm geometry $p +$x+$y
+        wm deiconify $p
+        raise $p
+        # Dismissal: Escape, a press outside the popdown (the grab routes it
+        # here), or the app window moving or resizing from under it (the guard
+        # bindtag on the toplevel; a tag insert is idempotent to re-opens and
+        # carries no stacked scripts, unlike `bind +`).
+        focus $p
+        bind $p <Escape> [list [self] close_enum_popover]
+        bind $p <ButtonPress> [list [self] on_pop_press %X %Y]
+        set apptop [winfo toplevel $Top]
+        bind StreamtreeAttrPopGuard <Configure> [list [self] close_enum_popover]
+        if {"StreamtreeAttrPopGuard" ni [bindtags $apptop]} {
+            bindtags $apptop [linsert [bindtags $apptop] 0 StreamtreeAttrPopGuard]
+        }
         catch {grab set $p}
+    }
+    # A press while the grab holds: inside the popdown it lands on the widget
+    # it aimed at; outside, it closes, the combobox contract.
+    method on_pop_press {X Y} {
+        set hit [winfo containing $X $Y]
+        if {$hit eq "" || [winfo toplevel $hit] ne $AttrPopTop} {
+            my close_enum_popover
+        }
     }
     method build_enum_checklist {} {
         set id $AttrPopId
@@ -1766,6 +1802,10 @@ oo::class create ::streamtree::StreamTree {
             destroy $AttrPopTop
         }
         set AttrPopTop ""
+        set apptop [winfo toplevel $Top]
+        set tags [bindtags $apptop]
+        set at [lsearch -exact $tags StreamtreeAttrPopGuard]
+        if {$at >= 0} { bindtags $apptop [lreplace $tags $at $at] }
     }
     # The roster an enum draws its checklist from: the declared provider's answer,
     # or the distinct non-empty values the nodes carry, sorted.
