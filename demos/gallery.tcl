@@ -39,6 +39,10 @@ set DEMOS [dict create \
         runargs {} teaches "markdown painted onto a text widget"] \
     leash      [dict create file leash-demo.tcl kind Tk page leash.md \
         runargs {} teaches "deferred work that dies with its owner"] \
+    searchfield [dict create file searchfield-demo.tcl kind Tk page searchfield.md \
+        runargs {} teaches "the typed half of a query, merged by its consumer"] \
+    querybuilder [dict create file querybuilder-demo.tcl kind Tk page querybuilder.md \
+        runargs {} teaches "structured criteria as chips, facets declared as data"] \
     ocmdline   [dict create file ocmdline-demo.tcl kind CLI page ocmdline.md \
         runargs {oolong --temp 90 --time 180} teaches "parser and help from one declaration"] \
     deadman    [dict create file deadman-demo.tcl kind CLI page deadman.md \
