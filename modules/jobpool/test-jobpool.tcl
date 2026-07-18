@@ -5,8 +5,8 @@
 # requeued, and a stale message refused. The worker here is a scripted
 # stand-in defined in the pool's own init; the module knows nothing of it.
 package require Tcl 9
-set ROOT [file dirname [file dirname [file normalize [info script]]]]
-::tcl::tm::path add $ROOT
+set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
+foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
 package require jobpool
 
 set fails 0

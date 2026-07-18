@@ -8,8 +8,8 @@
 package require Tcl 9
 package require Tk
 
-set ROOT [file dirname [file dirname [file normalize [info script]]]]
-::tcl::tm::path add $ROOT
+set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
+foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
 package require streamdoc
 set ::env(STREAMDOC_AUDIT) 1
 

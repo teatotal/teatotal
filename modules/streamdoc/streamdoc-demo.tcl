@@ -15,7 +15,7 @@ package require Tcl 9
 package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
-::tcl::tm::path add [file dirname $HERE]
+foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
 package require streamdoc
 
 font create DocBody {*}[font actual TkTextFont]

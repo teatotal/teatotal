@@ -8,7 +8,7 @@
 
 package require Tcl 9
 set HERE [file dirname [file normalize [info script]]]
-::tcl::tm::path add [file dirname $HERE]
+foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
 package require jobpool
 
 # Two kinds of work, one proc each. Each sleeps in short beats and calls

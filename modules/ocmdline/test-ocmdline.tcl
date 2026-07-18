@@ -5,8 +5,8 @@
 # The command lines here are invented for the tests; the module knows nothing of
 # any program that uses it.
 package require Tcl 9
-set ROOT [file dirname [file dirname [file normalize [info script]]]]
-::tcl::tm::path add $ROOT
+set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
+foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
 package require ocmdline
 
 set fails 0

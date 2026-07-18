@@ -8,8 +8,8 @@
 # level stays measured, not remembered. Where a class matters to
 # validation, the parsed dict also runs through a small ruleset.
 package require Tcl 9
-set ROOT [file dirname [file dirname [file normalize [info script]]]]
-::tcl::tm::path add $ROOT
+set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
+foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
 package require yamlmuster
 
 # The corpus needs the parser it measures; a shelf clone without tcllib

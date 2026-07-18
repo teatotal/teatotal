@@ -19,25 +19,33 @@ git clone https://github.com/teatotal/teatotal.git
 ```
 
 ```tcl
-::tcl::tm::path add /path/to/teatotal
+::tcl::tm::path add /path/to/teatotal/modules/deadman
 package require deadman
+```
+
+Or put the whole shelf on the path:
+
+```tcl
+foreach dir [glob -directory /path/to/teatotal/modules -type d *] {
+    ::tcl::tm::path add $dir
+}
 ```
 
 | Module                      | The problem it solves                                                                                                                                                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [deadman](deadman.md)       | An exec wedges, and the kill that follows takes the launcher while its forked children keep the lock file. deadman runs the command in its own process group, kills the whole tree on stall, wall clock, or the caller's own check, and reports the real exit code and which detector fired. |
-| [jobloop](jobloop.md)       | Background work on an event-driven app either blocks the loop or grows hand-rolled `after`/coroutine scaffolding with no cancel, no cap, and no account of what runs. jobloop runs each job as a coroutine on the loop you already have, with the full lifecycle: cancel mid-wait, per-kind caps, pacing floors and holds, an event stream. No `Thread` package anywhere; jobpool's event-loop twin. |
-| [jobpool](jobpool.md)       | `tpool` runs your jobs but owns none of their lifecycle: you cannot cancel one that is already running, hold the queue, or cap one kind of work while the rest fan out. jobpool adds the per-job state machine, cooperative cancel and pause, per-kind caps, pacing floors and holds, and an event stream a subscriber follows; jobloop's threaded twin, built on the engine class jobloop publishes, for work that burns CPU or blocks. |
-| [leash](leash.md)           | Destroy a TclOO object and a timer it armed still fires, into a dead command name; the mixin's destructor cancels whatever is pending.                                                |
-| [ocmdline](ocmdline.md)     | Parsing that keeps occurrence order, because a flag that negates the one after it or cuts a list in two needs the order a settings dict throws away. Parse and help both render from one option table, so the help cannot promise a flag the parser refuses, which is the drift every hand-rolled argv loop eventually grows. |
-| [streamdoc](streamdoc.md)   | Stream a line into a Tk text widget while someone reads it, or fold a section above them, and their scroll jumps; streamdoc brackets every mutation so the line they are on stays put. |
-| [streamtree](streamtree.md) | `ttk::treeview` cannot wrap a row, embed a widget in one, or take a streamed insert without the view jumping. This tree, drawn in a text widget under treeview's own vocabulary, can. |
-| [tkdown](tkdown.md)         | Chat and transcript bodies arrive as markdown, which a text widget shows as raw markers; tkdown paints the forms such bodies carry (fences, tables, headings, lists, emphasis) onto plain tags, the parse half Tk-free. |
-| [yamlmuster](yamlmuster.md) | A hand-grown validator for parsed YAML makes every caller pay for every check, and its rules files are code you have to trust. yamlmuster indexes rules by level, group, and severity for partial validation - you pay only for the checks you select, and `stats` shows the bill - and loads them through a policed interpreter whose whole command table is `level`/`child`/`rule`, so a rules file can only declare. Dict-in: your parser parses, yamlmuster validates, at a measured YAML 1.1 (tcllib yaml) compatibility level. |
+| [deadman](modules/deadman/deadman.md)       | An exec wedges, and the kill that follows takes the launcher while its forked children keep the lock file. deadman runs the command in its own process group, kills the whole tree on stall, wall clock, or the caller's own check, and reports the real exit code and which detector fired. |
+| [jobloop](modules/jobloop/jobloop.md)       | Background work on an event-driven app either blocks the loop or grows hand-rolled `after`/coroutine scaffolding with no cancel, no cap, and no account of what runs. jobloop runs each job as a coroutine on the loop you already have, with the full lifecycle: cancel mid-wait, per-kind caps, pacing floors and holds, an event stream. No `Thread` package anywhere; jobpool's event-loop twin. |
+| [jobpool](modules/jobpool/jobpool.md)       | `tpool` runs your jobs but owns none of their lifecycle: you cannot cancel one that is already running, hold the queue, or cap one kind of work while the rest fan out. jobpool adds the per-job state machine, cooperative cancel and pause, per-kind caps, pacing floors and holds, and an event stream a subscriber follows; jobloop's threaded twin, built on the engine class jobloop publishes, for work that burns CPU or blocks. |
+| [leash](modules/leash/leash.md)           | Destroy a TclOO object and a timer it armed still fires, into a dead command name; the mixin's destructor cancels whatever is pending.                                                |
+| [ocmdline](modules/ocmdline/ocmdline.md)     | Parsing that keeps occurrence order, because a flag that negates the one after it or cuts a list in two needs the order a settings dict throws away. Parse and help both render from one option table, so the help cannot promise a flag the parser refuses, which is the drift every hand-rolled argv loop eventually grows. |
+| [streamdoc](modules/streamdoc/streamdoc.md)   | Stream a line into a Tk text widget while someone reads it, or fold a section above them, and their scroll jumps; streamdoc brackets every mutation so the line they are on stays put. |
+| [streamtree](modules/streamtree/streamtree.md) | `ttk::treeview` cannot wrap a row, embed a widget in one, or take a streamed insert without the view jumping. This tree, drawn in a text widget under treeview's own vocabulary, can. |
+| [tkdown](modules/tkdown/tkdown.md)         | Chat and transcript bodies arrive as markdown, which a text widget shows as raw markers; tkdown paints the forms such bodies carry (fences, tables, headings, lists, emphasis) onto plain tags, the parse half Tk-free. |
+| [yamlmuster](modules/yamlmuster/yamlmuster.md) | A hand-grown validator for parsed YAML makes every caller pay for every check, and its rules files are code you have to trust. yamlmuster indexes rules by level, group, and severity for partial validation - you pay only for the checks you select, and `stats` shows the bill - and loads them through a policed interpreter whose whole command table is `level`/`child`/`rule`, so a rules file can only declare. Dict-in: your parser parses, yamlmuster validates, at a measured YAML 1.1 (tcllib yaml) compatibility level. |
 
 ## Demos
 
-Every module has a runnable demo under `demos/`, and one launcher shows them all:
+Each module's directory under `modules/` holds everything it ships: the `.tm` file, its man page, its tests, and a runnable demo - the layout tcllib and tklib use. One launcher shows every demo:
 
 ```sh
 wish9.0 demos/gallery.tcl
@@ -45,19 +53,19 @@ wish9.0 demos/gallery.tcl
 
 The gallery lists the demos, paints the selected module's man page into a reading pane, runs a demo as a deadman-watched subprocess with its output streaming below, and shows its source - and is itself built from the module stock it demonstrates. Each demo also runs standalone:
 
-- `demos/deadman-demo.tcl` - a clean exit, a stall kill, and a TERM-trapper met with escalation; the same verdict dict for each.
-- `demos/jobloop-demo.tcl` - two kinds of waiting work on one event loop, a paced kind launching in visible gaps, one job cancelled mid-wait between beats.
-- `demos/jobpool-demo.tcl` - a batch through a two-slot pool, every state change printed, one job cancelled mid-run, one kind held to a single worker.
-- `demos/leash-demo.tcl` - counters whose timers die with their owner; destroy one card and the others keep counting.
-- `demos/ocmdline-demo.tcl` - a tea timer whose help and parser render from one option table (`tclsh9.0 demos/ocmdline-demo.tcl --help`).
-- `demos/streamdoc-demo.tcl` - a streaming feed of foldable regions that never moves the line you are reading.
-- `demos/streamtree-demo.tcl` - a sortable, resizable, streaming tree drawn in one text widget.
-- `demos/tkdown-demo.tcl` - a markdown sampler pane; the font-size spinbox refits the table live.
-- `demos/yamlmuster-demo.tcl` - a campaign ruleset over clean and broken dicts, two partial passes with the bill each one paid, a hostile rules file refused at load (`tclsh9.0 demos/yamlmuster-demo.tcl`).
+- `modules/deadman/deadman-demo.tcl` - a clean exit, a stall kill, and a TERM-trapper met with escalation; the same verdict dict for each.
+- `modules/jobloop/jobloop-demo.tcl` - two kinds of waiting work on one event loop, a paced kind launching in visible gaps, one job cancelled mid-wait between beats.
+- `modules/jobpool/jobpool-demo.tcl` - a batch through a two-slot pool, every state change printed, one job cancelled mid-run, one kind held to a single worker.
+- `modules/leash/leash-demo.tcl` - counters whose timers die with their owner; destroy one card and the others keep counting.
+- `modules/ocmdline/ocmdline-demo.tcl` - a tea timer whose help and parser render from one option table (`tclsh9.0 modules/ocmdline/ocmdline-demo.tcl --help`).
+- `modules/streamdoc/streamdoc-demo.tcl` - a streaming feed of foldable regions that never moves the line you are reading.
+- `modules/streamtree/streamtree-demo.tcl` - a sortable, resizable, streaming tree drawn in one text widget.
+- `modules/tkdown/tkdown-demo.tcl` - a markdown sampler pane; the font-size spinbox refits the table live.
+- `modules/yamlmuster/yamlmuster-demo.tcl` - a campaign ruleset over clean and broken dicts, two partial passes with the bill each one paid, a hostile rules file refused at load (`tclsh9.0 modules/yamlmuster/yamlmuster-demo.tcl`).
 
 ## Tests
 
-Every module carries a standalone test under `tests/`, and one script runs them together:
+Every module carries its standalone tests in its own directory, and one script runs them together:
 
 ```sh
 tests/run.sh
@@ -67,7 +75,7 @@ The runner turns the StreamTree and StreamDoc audit gates on for the whole suite
 
 ## Contributing
 
-Send a pull request with your `name-version.tm` file (lowercase name, as TIP 590 recommends) and a `name.md` man page beside it. The module is plain Tcl source and runs on Tcl 9: that is the promise every download from here carries, so yours carries it too. That is the whole bar: the PR will be merged.
+Send a pull request with a `modules/name/` directory holding your `name-version.tm` file (lowercase name, as TIP 590 recommends) and a `name.md` man page beside it. The module is plain Tcl source and runs on Tcl 9: that is the promise every download from here carries, so yours carries it too. That is the whole bar: the PR will be merged.
 
 The in-house modules grow inside the applications they were written for and sync here when a version is published. This repository is the published home of their source and man pages: the code evolves in its host, and each release lands here as the stable copy you fetch.
 

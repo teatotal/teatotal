@@ -33,7 +33,7 @@ sleep 2
 export STREAMTREE_AUDIT=1
 export STREAMDOC_AUDIT=1
 fails=0
-for t in tests/test-*.tcl; do
+for t in modules/*/test-*.tcl tests/test-*.tcl; do
     if grep -qE '^[[:space:]]*package require (Tk|Ttk|tk|ttk)\b' "$t"; then
         err=$(DISPLAY=":$disp" timeout 90 wish9.0 "$t" 2>&1 >/dev/null); code=$?
     else
@@ -46,7 +46,7 @@ for t in tests/test-*.tcl; do
         status="INVARIANT"; fails=$((fails+1))
         printf '%s\n' "$err" | grep 'INVARIANT @'
     fi
-    printf '%-44s %s\n' "$t" "$status"
+    printf '%-52s %s\n' "$t" "$status"
 done
 
 kill "$xvfb" 2>/dev/null

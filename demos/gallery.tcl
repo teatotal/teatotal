@@ -19,7 +19,7 @@ package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
 set ROOT [file dirname $HERE]
-::tcl::tm::path add $ROOT
+foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
 package require ocmdline
 package require leash
 package require streamtree
@@ -217,10 +217,10 @@ oo::class create Gallery {
 
     method pick {name} {
         set Selected $name
-        my read_show [my slurp [file join $::ROOT [dict get $::DEMOS $name page]]] markdown
+        my read_show [my slurp [file join $::ROOT modules $name [dict get $::DEMOS $name page]]] markdown
     }
     method show_source {} {
-        my read_show [my slurp [file join $::HERE [dict get $::DEMOS $Selected file]]] plain
+        my read_show [my slurp [file join $::ROOT modules $Selected [dict get $::DEMOS $Selected file]]] plain
     }
     method slurp {path} {
         set f [open $path r]
@@ -247,7 +247,7 @@ oo::class create Gallery {
     method run {} {
         set d [dict get $::DEMOS $Selected]
         set interp [expr {[dict get $d kind] eq "Tk" ? "wish9.0" : "tclsh9.0"}]
-        set cmd [list $interp [file join $::HERE [dict get $d file]] \
+        set cmd [list $interp [file join $::ROOT modules $Selected [dict get $d file]] \
             {*}[dict get $d runargs]]
         set Lines 0
         $Log batch {
