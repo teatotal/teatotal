@@ -1,7 +1,7 @@
 package require Tcl 9
 package require TclOO
 package require leash
-package provide jobloop 1.0
+package provide jobloop 1.1
 
 # jobloop - an event-loop job pool that owns each job's lifecycle, not just
 # its coroutine.
@@ -309,14 +309,6 @@ oo::class create ::jobloop::engine {
         my _try_launch
     }
 
-    method _active_count_for_kind {kind} {
-        set n 0
-        foreach job [my active_jobs] {
-            if {[dict get $JobMeta $job kind] eq $kind} { incr n }
-        }
-        return $n
-    }
-
     # ─── Mutators ────────────────────────────────────────────────────
 
     # register - remap a kind to a command prefix. An unregistered kind runs
@@ -502,19 +494,31 @@ oo::class create ::jobloop::engine {
 
     # _try_launch - walk the queue in order, launching any job that clears
     # every admission control. State flips to running at launch time, so
-    # the cap math reads straight from the state map and there is no
-    # queued/running gap to race; how the body then starts is the runtime's
-    # Launch. The controls fold in per job: the lifetime count cap first
-    # (nothing more launches once it is hit), then the global cap (stop and
-    # keep the tail), a held kind (announce once, keep queued, scan on so
-    # other kinds launch), the per-kind cap, the pacing floor (track the
-    # soonest wait and arm one coalesced re-drain), and the admission gate.
+    # the cap math has no queued/running gap to race; how the body then
+    # starts is the runtime's Launch (deferred, so no worker code runs
+    # inside the walk). The active tallies are taken from the state map
+    # once per walk and moved forward at each launch - a rescan per queued
+    # job made a long held-back queue quadratic, and the enqueue-per-row
+    # intake of a large board cubic. The controls fold in per job: the
+    # lifetime count cap first (nothing more launches once it is hit), then
+    # the global cap (stop and keep the tail), a held kind (announce once,
+    # keep queued, scan on so other kinds launch), the per-kind cap, the
+    # pacing floor (track the soonest wait and arm one coalesced re-drain),
+    # and the admission gate.
     method _try_launch {} {
         if {$QueuePaused} return
         my forget $PaceTimer
         set PaceTimer ""
         set soonest ""
         set now [clock milliseconds]
+        set active_n 0
+        set active_kind [dict create]
+        dict for {j st} $JobState {
+            if {$st in {running paused rate_limited}} {
+                incr active_n
+                dict incr active_kind [dict get $JobMeta $j kind]
+            }
+        }
         set new_queue {}
         set i 0
         set n [llength $Queue]
@@ -533,7 +537,7 @@ oo::class create ::jobloop::engine {
                 while {$i < $n} { lappend new_queue [lindex $Queue $i]; incr i }
                 break
             }
-            if {[llength [my active_jobs]] >= $Jobs} {
+            if {$active_n >= $Jobs} {
                 lappend new_queue $job
                 while {$i < $n} { lappend new_queue [lindex $Queue $i]; incr i }
                 break
@@ -550,7 +554,9 @@ oo::class create ::jobloop::engine {
             }
             set kcap [expr {[dict exists $KindCap $kind]
                             ? [dict get $KindCap $kind] : $Jobs}]
-            if {[my _active_count_for_kind $kind] >= $kcap} {
+            set kact [expr {[dict exists $active_kind $kind]
+                            ? [dict get $active_kind $kind] : 0}]
+            if {$kact >= $kcap} {
                 lappend new_queue $job
                 continue
             }
@@ -576,6 +582,8 @@ oo::class create ::jobloop::engine {
             }
             dict set LastLaunch $kind [clock milliseconds]
             incr Launched
+            incr active_n
+            dict incr active_kind $kind
             dict set JobMeta $job started_at [clock milliseconds]
             my _set_state $job running
             my Launch $job
