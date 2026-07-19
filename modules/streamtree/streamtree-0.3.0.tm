@@ -1,6 +1,7 @@
 package require Tcl 9
 package require Tk
-package provide streamtree 0.2.0
+package require leash
+package provide streamtree 0.3.0
 
 namespace eval ::streamtree {}
 
@@ -163,6 +164,12 @@ proc ::streamtree::sane_tabs {tabs} {
 }
 
 oo::class create ::streamtree::StreamTree {
+    # Deferred work (the debounced resort timer, the coalesced relayout idle) is
+    # armed only through the leash verbs (my later / my forget), so a resort or
+    # relayout still pending when the object is destroyed is cancelled by leash's
+    # destructor rather than firing into a dead command. A subclass that also
+    # mixes in leash is harmless: TclOO carries the mixin once.
+    mixin leash
     variable Top
     variable Text
     # The generic node store. Nodes maps a node id to its dict
@@ -191,7 +198,7 @@ oo::class create ::streamtree::StreamTree {
     variable RelayoutPending  ;# 1 while a debounced relayout is queued
     variable SortKey          ;# active sort column id
     variable SortDir          ;# desc | asc
-    variable ResortTimer      ;# after-id of the debounced resort, or "" when none is pending
+    variable ResortTimer      ;# leash token of the debounced resort, or "" when none is pending
     variable AtTop            ;# anchor state across a streaming insert
     variable AtBottom         ;# tail-latch state across a streaming insert (-autofollow)
     variable WasAtBottom      ;# last observed bottom state, edges fire <<AtBottom>>/<<LeftBottom>>
@@ -588,7 +595,7 @@ oo::class create ::streamtree::StreamTree {
         set LayoutW $w
         if {$RelayoutPending} return
         set RelayoutPending 1
-        after idle [list [self] relayout]
+        my later idle [list [self] relayout]
     }
     method relayout {} {
         set RelayoutPending 0
@@ -802,8 +809,8 @@ oo::class create ::streamtree::StreamTree {
     # sort needs none (streaming order is already correct), so this no-ops then.
     method schedule_resort {} {
         if {[my is_default_sort]} return
-        if {$ResortTimer ne ""} { after cancel $ResortTimer }
-        set ResortTimer [after [my opt resortdelay] \
+        if {$ResortTimer ne ""} { my forget $ResortTimer }
+        set ResortTimer [my later [my opt resortdelay] \
             [list [self] do_resort]]
     }
     method do_resort {} {
@@ -815,7 +822,7 @@ oo::class create ::streamtree::StreamTree {
     # (a header click), so a stale timer cannot fire a second redundant rebuild
     # just after the user starts interacting with the freshly-sorted list.
     method cancel_resort {} {
-        if {$ResortTimer ne ""} { after cancel $ResortTimer; set ResortTimer "" }
+        if {$ResortTimer ne ""} { my forget $ResortTimer; set ResortTimer "" }
     }
 
     # ---- view-anchoring around streaming inserts ----------------------
