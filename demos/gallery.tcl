@@ -45,6 +45,8 @@ set DEMOS [dict create \
         runargs {} teaches "structured criteria as chips, facets declared as data"] \
     ocmdline   [dict create file ocmdline-demo.tcl kind CLI page ocmdline.md \
         runargs {oolong --temp 90 --time 180} teaches "parser and help from one declaration"] \
+    must       [dict create file must-demo.tcl kind CLI page must.md \
+        runargs {} teaches "the substring a regex cannot match without"] \
     deadman    [dict create file deadman-demo.tcl kind CLI page deadman.md \
         runargs {} teaches "a subprocess watchdog that owns the whole kill"] \
     jobpool    [dict create file jobpool-demo.tcl kind CLI page jobpool.md \
