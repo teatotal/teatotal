@@ -25,8 +25,8 @@ namespace eval ::streamdoc {}
 # Plus r#Nm at the summary line's first char while one stands. Gravity does
 # the bookkeeping; the document streams without index arithmetic.
 #
-# Two elide layers per region, owned by the base class - no other code may mutate a
-# tag's -elide:
+# Two elide layers per region, owned by the base class - no other code
+# may mutate a tag's -elide:
 #   f#N  the fold range [header +1line linestart, end): whole logical lines
 #        only, never the header's own newline - eliding it would visually
 #        join adjacent headers when everything is folded.
@@ -40,9 +40,9 @@ namespace eval ::streamdoc {}
 #
 # Content enters through the door, inside `batch`: append_open / emit /
 # emit_window / append_close. While a region is open the door feeds it,
-# popping any standing summary line first and re-appending it at close (the
-# summary transaction, internal to the base class); between regions the door appends
-# chrome at the tail. `savepoint` takes a left-gravity mark at the append
+# popping any standing summary line first and re-appending it at close
+# (the summary transaction, internal to the base class); between regions
+# the door appends chrome at the tail. `savepoint` takes a left-gravity mark at the append
 # point and `rewind mark` deletes from it to the open region's end, so a
 # caller can re-emit a provisional tail; the summary pop is built on it.
 #
