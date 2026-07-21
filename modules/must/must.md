@@ -15,8 +15,8 @@ foreach line $lines {
     if {[regexp -- $pattern $line]} { ... } ;# factor present: verify
 }
 
-lassign [must::factor {[^A-Za-z]M2[^A-Za-z]}] factor nocase
-;# factor = M2, nocase = 0
+lassign [must::factor {[^A-Za-z]K9[^A-Za-z]}] factor nocase
+;# factor = K9, nocase = 0
 ```
 
 ## DESCRIPTION

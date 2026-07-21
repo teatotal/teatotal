@@ -26,10 +26,10 @@ proc factor {args} { return [::must::factor {*}$args] }
 
 # ---- plain extraction -------------------------------------------------------
 check plain_literal      {busyduck 0} [factor {busyduck}]
-check class_bound        {M2 0}       [factor {[^A-Za-z]M2[^A-Za-z]}]
+check class_bound        {K9 0}       [factor {[^A-Za-z]K9[^A-Za-z]}]
 check anchors_break      {scan 0}     [factor {^scan$}]
 check dot_breaks         {ab 0}       [factor {ab.cd.e}]
-check escape_breaks      {M2 0}       [factor {M2\.tm}]
+check escape_breaks      {K9 0}       [factor {K9\.tm}]
 check class_shorthand    {foo 0}      [factor {\d+foo}]
 check longest_run        {longer 0}   [factor {ab.longer.cd}]
 
@@ -78,12 +78,12 @@ check filter_hex_match_kept 1 [{*}$keep_hex {the ABC is real}]
 
 # ---- regexp's command flags, mirrored as options -----------------------------
 check opt_nocase         {error 1} [factor -nocase {Error}]
-check opt_expanded       {{} 0}    [factor -expanded {M2}]
+check opt_expanded       {{} 0}    [factor -expanded {K9}]
 check opt_unknown_errors 1 [catch {::must::factor -bogus {x}}]
 
 # ---- case: a leading (?i) folds the factor ----------------------------------
-check director_nocase    {m2 1}  [factor {(?i)M2}]
-check director_case_kept {M2 0}  [factor {(?c)M2}]
+check director_nocase    {k9 1}  [factor {(?i)K9}]
+check director_case_kept {K9 0}  [factor {(?c)K9}]
 
 # ---- any ordinary character joins a run, whatever its alphabet --------------
 # The factor is a substring of the match text itself; whether a transformed
@@ -96,13 +96,13 @@ check quote_in_run       {say\"hi 0} [factor "say\"hi"]
 # Each pair is {pattern haystack-that-matches}; the factor must sit inside the
 # haystack, lowered on both sides when the flag says nocase.
 foreach {pat s} {
-    {[^A-Za-z]M2[^A-Za-z]}  { M2.}
-    {(?i)M2}                {an m2 here}
+    {[^A-Za-z]K9[^A-Za-z]}  { K9.}
+    {(?i)K9}                {an k9 here}
     {colou?r}               {color}
     {colou?r}               {colour}
     {a(b|c)d}               {acd}
     {\d+foo}                {42foo}
-    {M2\.tm}                {M2.tm}
+    {K9\.tm}                {K9.tm}
     {a{2,3}b}               {aab}
     {ab*c}                  {ac}
     {héllo}                 {oh héllo there}
@@ -120,11 +120,11 @@ foreach {pat s} {
 }
 
 # ---- the filter command: 0 only on a provable miss --------------------------
-set keep [::must::filter {[^A-Za-z]M2[^A-Za-z]}]
-check filter_hit      1 [{*}$keep {an M2 marker}]
+set keep [::must::filter {[^A-Za-z]K9[^A-Za-z]}]
+check filter_hit      1 [{*}$keep {an K9 marker}]
 check filter_miss     0 [{*}$keep {nothing here}]
-set keep [::must::filter {(?i)M2}]
-check filter_fold_hit 1 [{*}$keep {an m2 marker}]
+set keep [::must::filter {(?i)K9}]
+check filter_fold_hit 1 [{*}$keep {an k9 marker}]
 set keep [::must::filter {[0-9]{4}}]
 check filter_factorless_passes 1 [{*}$keep {anything at all}]
 set keep [::must::filter -nocase {Error}]

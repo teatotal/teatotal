@@ -13,7 +13,7 @@ puts "1. The factor of a pattern: the substring every match must contain."
 puts "   No factor means nothing is provably required, so every line stays a"
 puts "   candidate and the pattern gates nothing."
 foreach pat {
-    {[^A-Za-z]M2[^A-Za-z]}
+    {[^A-Za-z]K9[^A-Za-z]}
     {colou?r}
     {(?i)error}
     {foo|bar}
@@ -30,13 +30,13 @@ foreach pat {
 puts ""
 
 puts "2. The filter in a scan loop: the regex runs only where the factor is."
-set pat {[^A-Za-z]M2[^A-Za-z]}
+set pat {[^A-Za-z]K9[^A-Za-z]}
 set keep [must::filter $pat]
 set lines {
-    "the M2 core dumped"
+    "the K9 core dumped"
     "an ordinary line of prose"
     "another quiet line, nothing here"
-    "M2 shows up again"
+    "K9 shows up again"
 }
 set tested 0
 set hits 0
