@@ -44,7 +44,7 @@ oo::class create DemoFeed {
         $Text tag bind summary <Button-1> [list [self] summary_click %x %y]
     }
 
-    # ---- engine hooks ----
+    # ---- subclass hooks ----
     method summary_text {payload} {
         set c [dict getdef $payload checks 0]
         if {!$c} { return "" }

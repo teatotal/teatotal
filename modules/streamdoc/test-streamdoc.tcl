@@ -1,5 +1,5 @@
 #!/usr/bin/env wish9.0
-# A minimal host over the StreamDoc engine: chrome and regions through the
+# A minimal host over the StreamDoc base class: chrome and regions through the
 # content door, the two elide layers, summary sync while a region streams,
 # rewind, reveal onto an elided target, and the anchor contract (a parked
 # reader unmoved by appends below; the autofollow latch at the tail). Audit
