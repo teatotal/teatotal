@@ -2,7 +2,7 @@ package require Tcl 9
 package require TclOO
 package require Thread
 package require jobloop
-package provide jobpool 1.0
+package provide jobpool 1.0.1
 
 # jobpool - a worker pool that owns each job's lifecycle, not just its
 # thread.
@@ -26,13 +26,13 @@ package provide jobpool 1.0
 #   $pool enqueue job42 heavy {input data-42}
 #   $pool cancel job42                     ;# reaches it even mid-run
 #
-# jobpool is the worker-thread runtime of ::jobloop::engine, the lifecycle
-# engine the jobloop module publishes: the queue, the state machine and its
+# jobpool is the worker-thread runtime of ::jobloop::lifecycle, the class
+# the jobloop module publishes: the queue, the state machine and its
 # guards, the admission controls, and the event stream live there, written
-# once for both twins. This module answers the engine's runtime seam with
-# threads: Launch posts the body to the tpool, the cancel and pause signals
-# travel as tsv sentinels the worker polls, and Reap reclaims each finished
-# job's tpool result record.
+# once for both twins. This module answers the lifecycle's runtime seam
+# with threads: Launch posts the body to the tpool, the cancel and pause
+# signals travel as tsv sentinels the worker polls, and Reap reclaims each
+# finished job's tpool result record.
 #
 # THE POOL AND ITS WORKERS
 #
@@ -132,7 +132,7 @@ package provide jobpool 1.0
 # Written against Tcl 9. Copyright (c) 2025 Weiwu Zhang, MIT license.
 
 oo::class create jobpool {
-    superclass ::jobloop::engine
+    superclass ::jobloop::lifecycle
 
     variable JobMeta Reg LogName
     variable Pool PostId Sentinels
@@ -172,7 +172,7 @@ oo::class create jobpool {
     }
 
     destructor {
-        # leash (the engine's mixin) has already cancelled the pacing timer
+        # leash (the lifecycle's mixin) has already cancelled the pacing timer
         # and chained here; release the thread pool. Running jobs finish on
         # their own threads and their late reports land nowhere.
         if {[info exists Pool]} { catch {tpool::release $Pool} }
