@@ -33,6 +33,7 @@ foreach dir [glob -directory /path/to/teatotal/modules -type d *] {
 
 | Module                      | The problem it solves                                                                                                                                                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [cdp](modules/cdp/cdp.md)             | Driving a browser over the DevTools protocol needs a websocket stack before the first command. cdp speaks minimal RFC6455 itself over a raw loopback socket: id-matched commands, an event buffer for reading the page's own network traffic, blocking reads for scripts and event-loop-pumping reads for a host whose loop must stay live. |
 | [deadman](modules/deadman/deadman.md)       | An exec wedges, and the kill that follows takes the launcher while its forked children keep the lock file. deadman runs the command in its own process group, kills the whole tree on stall, wall clock, or the caller's own check, and reports the real exit code and which detector fired. |
 | [jobloop](modules/jobloop/jobloop.md)       | Background work on an event-driven app either blocks the loop or grows hand-rolled `after`/coroutine scaffolding with no cancel, no cap, and no account of what runs. jobloop runs each job as a coroutine on the loop you already have, with the full lifecycle: cancel mid-wait, per-kind caps, pacing floors and holds, an event stream. No `Thread` package anywhere; jobpool's event-loop twin. |
 | [jobpool](modules/jobpool/jobpool.md)       | `tpool` runs your jobs but owns none of their lifecycle: you cannot cancel one that is already running, hold the queue, or cap one kind of work while the rest fan out. jobpool adds the per-job state machine, cooperative cancel and pause, per-kind caps, pacing floors and holds, and an event stream a subscriber follows; jobloop's threaded twin, built on the engine class jobloop publishes, for work that burns CPU or blocks. |
@@ -56,6 +57,7 @@ wish9.0 demos/gallery.tcl
 
 The gallery lists the demos, paints the selected module's man page into a reading pane, runs a demo as a deadman-watched subprocess with its output streaming below, and shows its source - and is itself built from the module stock it demonstrates. Each demo also runs standalone:
 
+- `modules/cdp/cdp-demo.tcl` - a real browser asked its version and evaluated from Tcl; launch Chromium with `--remote-debugging-port` and point `CDP_WS_URL` at a page target (header comment shows the two commands).
 - `modules/deadman/deadman-demo.tcl` - a clean exit, a stall kill, and a TERM-trapper met with escalation; the same verdict dict for each.
 - `modules/jobloop/jobloop-demo.tcl` - two kinds of waiting work on one event loop, a paced kind launching in visible gaps, one job cancelled mid-wait between beats.
 - `modules/jobpool/jobpool-demo.tcl` - a batch through a two-slot pool, every state change printed, one job cancelled mid-run, one kind held to a single worker.

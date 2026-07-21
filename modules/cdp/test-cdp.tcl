@@ -4,7 +4,7 @@
 # a server), across all three payload-length encodings (7-bit, 16-bit, 64-bit);
 # connect must fail loudly on a non-ws URL and on an unset CDP_WS_URL. No socket
 # and no browser: the wire behaviour against a live DevTools endpoint is the
-# demo's job, not the load gate's.
+# demo's job, not this test's.
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
