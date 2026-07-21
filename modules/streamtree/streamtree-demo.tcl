@@ -41,7 +41,7 @@ oo::class create DemoList {
         my set_sort size
     }
 
-    # ---- engine hooks ----
+    # ---- subclass hooks ----
     method column_spec {} {
         return {{size Size {9999 KB} right 1} {lines Lines {99999} right 1}}
     }

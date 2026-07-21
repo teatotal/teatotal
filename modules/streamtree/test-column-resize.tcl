@@ -1,5 +1,5 @@
 #!/usr/bin/env wish9.0
-# Draggable metadata-column resize on the StreamTree engine: a width set through
+# Draggable metadata-column resize on the StreamTree base class: a width set through
 # the `column` API (the same path the header drag drives) round-trips and
 # re-pins the tab stops, the minimum-width clamp holds, and a header click away
 # from a boundary still sorts.

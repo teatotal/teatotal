@@ -28,7 +28,7 @@
 #                   streamtree retains the payload dict per row (it doubles as
 #                   the host's model); treeview holds display text only.
 #
-# The engine benchmarked is the BASE class: one text string per row, no
+# What is benchmarked is the BASE class: one text string per row, no
 # metadata columns, no per-row bindings. A subclass with columns and wired
 # rows pays more per row.
 
@@ -226,7 +226,7 @@ catch {
     regexp {model name\s*:\s*([^\n]+)} $ci -> cpu
 }
 puts "Tcl [info patchlevel], Tk [package present Tk], $cpu,\
-[exec uname -sr], Xvfb (software rendering). Base engine: one text string per\
+[exec uname -sr], Xvfb (software rendering). Base class: one text string per\
 row, no columns, no per-row bindings."
 puts ""
 puts "| scenario | N | median (min-max) | per row | notes |"

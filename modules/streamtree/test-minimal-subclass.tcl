@@ -1,7 +1,7 @@
 #!/usr/bin/env wish9.0
 # The base class must render with no subclass at all: every content hook has a
 # working default (rows read the payload's `label`, no metadata columns, tabs
-# widget-wide), the setup ritual seeds the engine state, and the zero-column
+# widget-wide), the setup ritual seeds the base class's state, and the zero-column
 # geometry paths (layout, header, header click) hold. Audit gate on throughout.
 
 package require Tcl 9

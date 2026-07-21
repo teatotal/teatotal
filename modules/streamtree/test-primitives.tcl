@@ -2,7 +2,7 @@
 # Drive the StreamTree structural primitives directly on a minimal subclass, with
 # the audit gate on, asserting after each that the mark contract holds and that
 # the buffer returns to its empty baseline (no leaked marks or tags) once every
-# node is gone. This exercises the engine's mark ownership in isolation, before
+# node is gone. This exercises the base class's mark ownership in isolation, before
 # any host wiring rides on it.
 
 package require Tcl 9
@@ -15,7 +15,7 @@ set ::env(STREAMTREE_AUDIT) 1
 
 # The test supplies its own look, the way any host does: two named fonts and a
 # plain colours dict through `configure`. Nothing asserted below depends on a
-# particular font or colour; the engine only needs real ones to measure with.
+# particular font or colour; the base class only needs real ones to measure with.
 font create TestList {*}[font actual TkTextFont]
 font create TestHead {*}[font actual TkTextFont] -weight bold
 
@@ -65,7 +65,7 @@ proc check {name expected actual} {
     } else { puts "ok:   $name" }
 }
 proc tripped {} { return [expr {[info exists ::STREAMTREE_AUDIT_TRIPPED] ? 1 : 0}] }
-# Count the position marks the engine owns (named <node>_s / <node>_e), so a
+# Count the position marks the base class owns (named <node>_s / <node>_e), so a
 # leak (a row removed but its marks left live) is visible as a non-zero residue.
 proc live_marks {w} {
     set n 0
