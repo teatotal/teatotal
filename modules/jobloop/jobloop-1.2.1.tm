@@ -1,7 +1,7 @@
 package require Tcl 9
 package require TclOO
 package require leash
-package provide jobloop 1.2
+package provide jobloop 1.2.1
 
 # jobloop - an event-loop job pool that owns each job's lifecycle, not just
 # its coroutine.
@@ -26,13 +26,13 @@ package provide jobloop 1.2
 #   $loop enqueue job42 fetch {url http://example.com/feed}
 #   $loop cancel job42                     ;# reaches it even mid-wait
 #
-# THE ENGINE (::jobloop::engine)
+# THE LIFECYCLE CLASS (::jobloop::lifecycle)
 #
-# Everything below except the coroutines lives in ::jobloop::engine, the
-# runtime-independent lifecycle engine this module publishes: the queue,
-# the state machine and its guards, the admission controls, the event
-# stream. jobloop is that engine run over coroutines. jobpool, its own
-# module on this shelf, subclasses the same engine over worker threads. A
+# Everything below except the coroutines lives in ::jobloop::lifecycle,
+# the runtime-independent class this module publishes: the queue, the
+# state machine and its guards, the admission controls, the event
+# stream. jobloop is that lifecycle run over coroutines. jobpool, its own
+# module on this shelf, subclasses the same lifecycle over worker threads. A
 # runtime answers six methods: Launch starts an admitted job's body;
 # SignalCancel, SignalPause, and SignalResume carry a flag to wherever the
 # running body can observe it; ClearSignals retracts both flags when a job
@@ -194,10 +194,11 @@ namespace eval ::jobloop::worker {
     }
 }
 
-# ::jobloop::engine - the runtime-independent lifecycle engine (see THE
-# ENGINE above). It owns every job's record and decides what launches next;
-# a runtime subclass owns how a body runs and how a signal reaches it.
-oo::class create ::jobloop::engine {
+# ::jobloop::lifecycle - the runtime-independent job lifecycle (see THE
+# LIFECYCLE CLASS above). It owns every job's record and decides what
+# launches next; a runtime subclass owns how a body runs and how a signal
+# reaches it.
+oo::class create ::jobloop::lifecycle {
     mixin leash
 
     variable Jobs KindCap
@@ -247,7 +248,7 @@ oo::class create ::jobloop::engine {
 
     # ─── The runtime seam ────────────────────────────────────────────
     # Launch, SignalCancel, SignalPause, SignalResume, and ClearSignals
-    # have no default: an engine without a runtime can neither start a body
+    # have no default: a lifecycle without a runtime can neither start a body
     # nor reach one. Reap defaults to nothing; a runtime with per-launch
     # records to reclaim overrides it.
     method Reap {job} {}
@@ -700,11 +701,11 @@ oo::class create ::jobloop::engine {
     }
 }
 
-# jobloop - the engine run over coroutines: each admitted job's body is a
-# coroutine this pool owns, its signals plain dicts read in-interpreter,
+# jobloop - the lifecycle run over coroutines: each admitted job's body is
+# a coroutine this pool owns, its signals plain dicts read in-interpreter,
 # its pause park a yield.
 oo::class create jobloop {
-    superclass ::jobloop::engine
+    superclass ::jobloop::lifecycle
 
     variable JobState JobMeta Terminal Reg LogName
     variable Coros CancelFlag PauseFlag Serial
