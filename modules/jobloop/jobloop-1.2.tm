@@ -1,7 +1,7 @@
 package require Tcl 9
 package require TclOO
 package require leash
-package provide jobloop 1.1
+package provide jobloop 1.2
 
 # jobloop - an event-loop job pool that owns each job's lifecycle, not just
 # its coroutine.
@@ -64,6 +64,20 @@ package provide jobloop 1.1
 # progress job text      informational: freeform progress text
 # rate_limited job until  running -> rate_limited (holds the slot)
 # rate_limit_cleared job  rate_limited -> running
+# parked job note        running -> parked: the job frees its slot while it
+#                        waits out an external window, and the note rides
+#                        job-parked. The pool never resumes a parked job: the
+#                        worker keeps its own wakeup through the park and
+#                        should checkpoint through it, so a cancel lands.
+# unparked job           parked -> running. The job re-takes a slot with no
+#                        cap re-check, like rate_limit_cleared's return: a
+#                        kind may transiently exceed its cap until the
+#                        surplus drains, the price of never stranding a job
+#                        whose window has ended.
+# self                   the calling coroutine's job id, "" outside a job -
+#                        so a library the worker calls into can report to the
+#                        job without the id threaded through every argument
+#                        list on the way down.
 # done job ?result?      terminal: -> done, result rides the event
 # failed job reason      terminal: -> failed, reason rides the event
 #
@@ -88,15 +102,23 @@ package provide jobloop 1.1
 #   queued -> running -> done|failed|cancelled
 #   running <-> paused           (user hold, observed at a checkpoint)
 #   running <-> rate_limited     (worker waiting on an external limit)
+#   running <-> parked           (worker waiting out an external window,
+#                                 slot handed back meanwhile)
 #   queued  -> cancelled         (dropped before it ever launches)
 #
 # running, paused and rate_limited each hold one of the pool's slots;
-# queued does not.
+# queued and parked do not. parked is rate_limited's slot-free sibling: a
+# rate_limited job's wait is expected to be short or exclusive, so it keeps
+# its slot; a parked job's window may be long and other work could use the
+# slot meanwhile, so parking frees it and the next queued job launches. A
+# parked job may finish where it stands: the terminal reports accept parked,
+# so a cancel or an outcome discovered mid-park needs no detour through
+# running.
 #
 # THE REPORTING SURFACE (verb -> pool method)
 #
 #   on_phase on_progress on_rate_limited on_rate_limit_cleared
-#   on_paused on_resumed on_done on_failed on_cancelled
+#   on_parked on_unparked on_paused on_resumed on_done on_failed on_cancelled
 #
 # A report that changes state is checked against the job's current state
 # and dropped, with a diagnostic, when it does not fit, so a stale report
@@ -123,7 +145,8 @@ package provide jobloop 1.1
 #
 # job-state fires on every transition (job, new-state); the finer events
 # job-phase, job-progress, job-done, job-failed, job-paused, job-resumed,
-# job-rate-limited, job-rate-limit-cleared carry each report on. queue-
+# job-rate-limited, job-rate-limit-cleared, job-parked, job-unparked carry
+# each report on. queue-
 # paused/queue-resumed track the whole-queue hold; kind-held/kind-released
 # track a single kind; count-cap-reached fires when the spent budget first
 # holds a job back.
@@ -156,8 +179,19 @@ namespace eval ::jobloop::worker {
     proc progress {job text}       { [_pool] on_progress $job $text }
     proc rate_limited {job until}  { [_pool] on_rate_limited $job $until }
     proc rate_limit_cleared {job}  { [_pool] on_rate_limit_cleared $job }
+    proc parked {job note}         { [_pool] on_parked $job $note }
+    proc unparked {job}            { [_pool] on_unparked $job }
     proc done {job {result {}}}    { [_pool] on_done $job $result }
     proc failed {job reason}       { [_pool] on_failed $job $reason }
+    # self - the job id of the coroutine this call runs in, "" outside one:
+    # the same Owner lookup every verb makes, followed by the pool's reverse
+    # map from coroutine to job. A library the worker calls into finds its
+    # job here instead of having the id threaded through every argument list.
+    proc self {} {
+        set co [info coroutine]
+        if {$co eq "" || ![dict exists $::jobloop::Owner $co]} { return "" }
+        return [[dict get $::jobloop::Owner $co] job_of $co]
+    }
 }
 
 # ::jobloop::engine - the runtime-independent lifecycle engine (see THE
@@ -252,7 +286,8 @@ oo::class create ::jobloop::engine {
         return $n
     }
     # active_jobs - jobs holding a slot: launched, not yet terminal. Queued
-    # jobs are not active; they have not launched.
+    # jobs are not active; they have not launched. Parked jobs are not active
+    # either: they launched, but handed the slot back for the park.
     method active_jobs {} {
         set out {}
         dict for {job state} $JobState {
@@ -264,6 +299,15 @@ oo::class create ::jobloop::engine {
         set out {}
         dict for {job state} $JobState {
             if {$state eq "queued"} { lappend out $job }
+        }
+        return $out
+    }
+    # parked_jobs - launched jobs waiting out an external window slot-free;
+    # the read a supervisor bounds its launch-blind dispatch on.
+    method parked_jobs {} {
+        set out {}
+        dict for {job state} $JobState {
+            if {$state eq "parked"} { lappend out $job }
         }
         return $out
     }
@@ -397,16 +441,18 @@ oo::class create ::jobloop::engine {
 
     # prune_missing - drop every job whose key is not in $valid_jobs. A
     # caller that recomputes the set of jobs it still wants uses this to
-    # shed the rest in one call. Active jobs (running/paused/rate_limited)
-    # keep their state: they own a slot and will reach a terminal report on
-    # their own. Only terminal or not-yet-launched jobs are collectable.
+    # shed the rest in one call. Launched jobs (running/paused/rate_limited/
+    # parked) keep their state: their body is live and will reach a terminal
+    # report on its own - a parked job holds no slot, but its coroutine is
+    # still on the loop, so collecting it would orphan a running body. Only
+    # terminal or not-yet-launched jobs are collectable.
     method prune_missing {valid_jobs} {
         set valid [dict create]
         foreach r $valid_jobs { dict set valid $r 1 }
         set dropped {}
         dict for {job state} $JobState {
             if {[dict exists $valid $job]} continue
-            if {$state in {running paused rate_limited}} continue
+            if {$state in {running paused rate_limited parked}} continue
             lappend dropped $job
         }
         foreach job $dropped {
@@ -447,14 +493,14 @@ oo::class create ::jobloop::engine {
         my _fire job-progress $job $text
     }
     method on_done {job {result {}}} {
-        if {![my _expect $job done {running paused rate_limited}]} return
+        if {![my _expect $job done {running paused rate_limited parked}]} return
         my _set_state $job done
         my Reap $job
         my _fire job-done $job $result
         my _try_launch
     }
     method on_failed {job reason} {
-        if {![my _expect $job failed {running paused rate_limited}]} return
+        if {![my _expect $job failed {running paused rate_limited parked}]} return
         my _set_state $job failed
         my Reap $job
         my _fire job-failed $job $reason
@@ -463,8 +509,10 @@ oo::class create ::jobloop::engine {
     method on_cancelled {job} {
         # rate_limited is cancellable too: a job waiting out an external
         # limit still checkpoints, and its cancel must free the slot rather
-        # than strand the job in rate_limited with the report refused.
-        if {![my _expect $job cancelled {running paused rate_limited}]} return
+        # than strand the job in rate_limited with the report refused. So is
+        # parked: its checkpointing park loop is where a cancel lands, and
+        # the terminal must take there without a detour through running.
+        if {![my _expect $job cancelled {running paused rate_limited parked}]} return
         my _set_state $job cancelled
         my Reap $job
         my _try_launch
@@ -478,6 +526,25 @@ oo::class create ::jobloop::engine {
         if {![my _expect $job rate_limit_cleared rate_limited]} return
         my _set_state $job running
         my _fire job-rate-limit-cleared $job
+    }
+    # on_parked - the worker hands its slot back for the length of an
+    # external window (a host gate, a quota reset) and keeps waiting where
+    # it stands. The tally in _try_launch reads states, so the freed slot is
+    # simply no longer counted; the immediate re-walk offers it to the queue.
+    method on_parked {job note} {
+        if {![my _expect $job parked running]} return
+        my _set_state $job parked
+        my _fire job-parked $job $note
+        my _try_launch
+    }
+    # on_unparked - the window ended and the worker resumes. No cap re-check,
+    # the same immediacy rate_limit_cleared has: the job already earned its
+    # launch, and holding it now would strand a body the world has resumed.
+    # The kind may transiently exceed its cap until the surplus drains.
+    method on_unparked {job} {
+        if {![my _expect $job unparked parked]} return
+        my _set_state $job running
+        my _fire job-unparked $job
     }
     method on_paused {job} {
         if {![my _expect $job paused running]} return
@@ -683,6 +750,16 @@ oo::class create jobloop {
     method ClearSignals {job} {
         catch {dict unset CancelFlag $job}
         catch {dict unset PauseFlag $job}
+    }
+
+    # job_of - the job a coroutine runs, "" for one this pool does not own:
+    # the runtime's reverse map behind the worker self verb. Coros is small
+    # (at most the launched, not-yet-finished jobs), so a walk suffices.
+    method job_of {co} {
+        dict for {job c} $Coros {
+            if {$c eq $co} { return $job }
+        }
+        return ""
     }
 
     # ─── Coroutine mechanics ─────────────────────────────────────────

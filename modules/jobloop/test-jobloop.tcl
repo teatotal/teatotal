@@ -88,6 +88,37 @@ proc w_rlhold {job opts} {
     rate_limit_cleared $job
     done $job cleared
 }
+# w_park - park slot-free (a gate window's stand-in), checkpointing through
+# the park so a cancel lands there; ::release_park($job) ends the window. The
+# post-release tail runs a few beats so a test can observe the running state.
+proc w_park {job opts} {
+    after 15 [info coroutine]; yield
+    checkpoint $job
+    parked $job [expr {[dict exists $opts note] ? [dict get $opts note] : "window"}]
+    while {![info exists ::release_park($job)]} {
+        after 20 [info coroutine]; yield
+        checkpoint $job
+    }
+    unparked $job
+    for {set i 0} {$i < 4} {incr i} {
+        after 30 [info coroutine]; yield
+        checkpoint $job
+    }
+    done $job parked-done
+}
+# w_park_die - park, then report done straight from parked (an outcome
+# discovered mid-park), never unparking.
+proc w_park_die {job opts} {
+    after 15 [info coroutine]; yield
+    parked $job window
+    after 30 [info coroutine]; yield
+    done $job died-parked
+}
+# w_self - report the job id the self verb resolves, as the result.
+proc w_self {job opts} {
+    after 15 [info coroutine]; yield
+    done $job [self]
+}
 # kind-named bodies (an unregistered kind runs the command of its own name)
 proc heavy  {job opts} { w_beats $job $opts }
 proc light  {job opts} { w_beats $job $opts }
@@ -97,6 +128,12 @@ proc slow   {job opts} { w_beats $job $opts }
 proc capped {job opts} { w_beats $job $opts }
 proc other  {job opts} { w_beats $job $opts }
 proc held   {job opts} { w_beats $job $opts }
+# gated - one kind whose jobs either park (opts carry park) or run plain, so
+# a park test caps the kind at 1 and races a parker against a plain sibling.
+proc gated  {job opts} {
+    if {[dict exists $opts park]} { w_park $job $opts } else { w_beats $job $opts }
+}
+proc parkdie {job opts} { w_park_die $job $opts }
 
 proc new_loop {n} { return [jobloop new $n] }
 
@@ -588,6 +625,111 @@ check rlcancel-slot-freed 0 [llength [$loop active_jobs]]
 $loop enqueue j2 w_beats {beats 1 beat 20}   ;# the freed slot takes a new job
 wait_terminal $loop j2
 check rlcancel-slot-reused done [$loop state j2]
+$loop destroy
+
+# -- a parked job frees its kind's slot; the sibling launches and completes
+#    around it, and the parked job resumes and finishes afterwards -----------
+
+set loop [new_loop 4]
+$loop set_kind_cap gated 1
+array unset ::release_park
+set ::pev {}
+$loop subscribe job-parked   {apply {{job note} {lappend ::pev parked:$job:$note}}}
+$loop subscribe job-unparked {apply {{job} {lappend ::pev unparked:$job}}}
+$loop enqueue pA gated {park 1 note gate-held}
+$loop enqueue pB gated {beats 2 beat 20}
+wait_state $loop pA parked
+check park-state parked [$loop state pA]
+check park-note-rides 1 [expr {"parked:pA:gate-held" in $::pev}]
+# the slot freed: the cap-1 sibling launches beside the parked job
+wait_state $loop pB running
+check park-slot-freed running [$loop state pB]
+check park-active-excludes {pB} [$loop active_jobs]
+check park-parked-jobs {pA} [$loop parked_jobs]
+check park-countbykind 1 [$loop count_by_kind gated parked]
+wait_terminal $loop pB
+check park-sibling-done done [$loop state pB]
+check park-still-parked parked [$loop state pA]
+set ::release_park(pA) 1
+wait_terminal $loop pA
+check park-resumed-done done [$loop state pA]
+check park-unpark-event 1 [expr {"unparked:pA" in $::pev}]
+$loop destroy
+
+# -- prune during a park spares the parked job --------------------------------
+
+set loop [new_loop 2]
+array unset ::release_park
+$loop enqueue pA gated {park 1}
+wait_state $loop pA parked
+check parkprune-count 0 [$loop prune_missing {}]
+check parkprune-spared parked [$loop state pA]
+set ::release_park(pA) 1
+wait_terminal $loop pA
+$loop destroy
+
+# -- cancelling a parked job reaps cleanly at the park's checkpoint -----------
+
+set loop [new_loop 2]
+array unset ::release_park
+$loop enqueue pA gated {park 1}
+wait_state $loop pA parked
+$loop cancel pA
+wait_terminal $loop pA
+check parkcancel-cancelled cancelled [$loop state pA]
+check parkcancel-no-actives 0 [llength [$loop active_jobs]]
+check parkcancel-no-parked 0 [llength [$loop parked_jobs]]
+$loop enqueue pZ w_beats {beats 1 beat 20}
+wait_terminal $loop pZ
+check parkcancel-pool-usable done [$loop state pZ]
+$loop destroy
+
+# -- a terminal from parked frees nothing twice: the slot went at the park,
+#    so the terminal must not mint a second free slot -------------------------
+
+set loop [new_loop 1]
+$loop enqueue pA parkdie {}
+wait_state $loop pA parked
+$loop enqueue pB w_beats {beats 6 beat 30}   ;# takes the slot the park freed
+wait_state $loop pB running
+wait_terminal $loop pA                       ;# done straight from parked
+check parkdie-done done [$loop state pA]
+$loop enqueue pC w_beats {beats 2 beat 20}
+pump 60
+check parkdie-no-double-free queued [$loop state pC]
+check parkdie-active 1 [llength [$loop active_jobs]]
+check parkdie-launched 2 [$loop launched_count]
+wait_terminal $loop pB
+wait_terminal $loop pC
+check parkdie-drains done [$loop state pC]
+$loop destroy
+
+# -- unpark re-takes a slot with no cap re-check: the kind transiently
+#    exceeds its cap, the documented price of never stranding a resumed job --
+
+set loop [new_loop 4]
+$loop set_kind_cap gated 1
+array unset ::release_park
+$loop enqueue pA gated {park 1}
+wait_state $loop pA parked
+$loop enqueue pB gated {beats 10 beat 30}
+wait_state $loop pB running
+set ::release_park(pA) 1
+wait_state $loop pA running
+check unpark-no-recheck 2 [running_among $loop pA pB]
+wait_terminal $loop pA
+wait_terminal $loop pB
+$loop destroy
+
+# -- the self verb names the calling coroutine's job, and nothing outside one -
+
+set loop [new_loop 2]
+set ::self_out none
+$loop subscribe job-done {apply {{job r} {set ::self_out $r}}}
+$loop enqueue me w_self {}
+wait_terminal $loop me
+check self-inside me $::self_out
+check self-outside "" [::jobloop::worker::self]
 $loop destroy
 
 # -- a supervisor that resumes from its own job-paused handler is safe -------
