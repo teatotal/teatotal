@@ -3,7 +3,7 @@
 # and a broken dict validated whole, two partial passes with the stats
 # that show what each one paid, and a hostile rules string refused at
 # load. It loads only the yamlmuster module - no Tk, and no YAML parser:
-# the engine is dict-in, so the "files" here are dicts already parsed.
+# the validator is dict-in, so the "files" here are dicts already parsed.
 #
 # Run it:   tclsh9.0 demos/yamlmuster-demo.tcl
 

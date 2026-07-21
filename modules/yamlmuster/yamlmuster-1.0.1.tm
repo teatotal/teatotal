@@ -1,6 +1,6 @@
 package require Tcl 9
 package require TclOO
-package provide yamlmuster 1.0
+package provide yamlmuster 1.0.1
 
 # yamlmuster - a rule-indexed validator for parsed YAML: partial validation
 # that bills only the checks you select, and policed rule loading from a
@@ -70,16 +70,16 @@ package provide yamlmuster 1.0
 #
 # VALIDATION - $v validate $data ?-groups g? ?-severities s? ?-context d?
 # ?-extra d? ?-limit n? ?-badnode issue|ignore? returns issue dicts
-# {severity code message path level ?key?} plus every -extra pair; engine
-# keys win a collision. An unknown group is an error, never a silent empty
+# {severity code message path level ?key?} plus every -extra pair;
+# validator keys win a collision. An unknown group is an error, never a silent empty
 # pass. Evaluation order is deterministic: rules in declaration order at
 # each node, child edges in declaration order, list elements in data
 # order, so -limit 1 returns the same first error every run.
 #
 # Load errors are loud and atomic: unknown kinds, missing -code, duplicate
 # levels, undeclared or unreachable levels, unregistered predicates all
-# abort the load whole, as {YAMLMUSTER LOAD <label> <line>}. The engine
-# does no I/O anywhere: the host reads the rules file and the data file,
+# abort the load whole, as {YAMLMUSTER LOAD <label> <line>}. The
+# validator does no I/O anywhere: the host reads the rules file and the data file,
 # yamlmuster sees only strings and dicts.
 #
 # Written against Tcl 9. MIT license, copyright (c) 2025 Weiwu Zhang.
@@ -673,7 +673,7 @@ oo::class create yamlmuster {
         return
     }
 
-    # Compose and record one issue: -extra first, engine fields over it,
+    # Compose and record one issue: -extra first, validator fields over it,
     # so severity/code/message/path/level/key always win a collision.
     # Error-severity issues count toward -limit; hitting it unwinds the
     # walk through the _LIMIT throw validate traps.
@@ -878,8 +878,8 @@ oo::class create yamlmuster {
                         throw [list YAMLMUSTER PREDICATE $name] \
                             "yamlmuster: predicate '$name' (rule $code): returned a non-dict issue"
                     }
-                    # Engine fills severity/code from the declaration and
-                    # owns path/level; the predicate may override
+                    # The validator fills severity/code from the declaration
+                    # and owns path/level; the predicate may override
                     # severity, code, and message per issue.
                     set fields $partial
                     dict set fields severity [dict getdef $partial severity $sev]

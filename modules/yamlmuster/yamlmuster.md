@@ -31,7 +31,7 @@ yamlmuster validates dicts against rules, with two properties its name-brand com
 
 yamlmuster is dict-in: it never parses YAML. A parser - tcllib's yaml, for the programs this grew in - turns the file into a Tcl dict, and yamlmuster validates the dict. The verified compatibility level is measured, parser version and exclusions named, in YAML COMPATIBILITY below; the name promises no more than the parser feeding it delivers.
 
-The engine does no I/O anywhere: the host reads the rules file and the data file, yamlmuster sees only strings and dicts. One instance carries one ruleset; a program validating several document kinds holds one instance per kind.
+The validator does no I/O anywhere: the host reads the rules file and the data file, yamlmuster sees only strings and dicts. One instance carries one ruleset; a program validating several document kinds holds one instance per kind.
 
 ## THE RULES FILE
 
@@ -96,7 +96,7 @@ Three verbs, flat, no script bodies. Loads are additive across calls and atomic 
 **any** and **atmost** read list elements shallowly from the parent level; they are rules at that level and do not force descent.
 
 **predicate** *name*
-: The escape hatch: a host command registered under *name* before the load (an unregistered name is a load error). Called as `{*}cmdprefix node meta` with meta `{path ... level ... context ... extra ...}`; returns a list of partial issue dicts, empty for a pass. The engine fills `severity` and `code` from the declaration and owns `path` and `level`; a partial issue may override severity, code, and message, which is how one predicate emits two codes. A predicate that throws is a host bug: validate rethrows it as `yamlmuster: predicate '<name>' (rule <code>): ...`, never an issue.
+: The escape hatch: a host command registered under *name* before the load (an unregistered name is a load error). Called as `{*}cmdprefix node meta` with meta `{path ... level ... context ... extra ...}`; returns a list of partial issue dicts, empty for a pass. The validator fills `severity` and `code` from the declaration and owns `path` and `level`; a partial issue may override severity, code, and message, which is how one predicate emits two codes. A predicate that throws is a host bug: validate rethrows it as `yamlmuster: predicate '<name>' (rule <code>): ...`, never an issue.
 
 ## THE POLICED INTERPRETER
 
@@ -119,7 +119,7 @@ Comments and line continuations are parse-level and survive; an empty or comment
 : Named external facts for `-needs` and predicates. A superset is fine; names no rule asks for sit unused.
 
 **-extra**
-: Merged into every emitted issue - where a consumer stamps `contact_name` or `segment` without teaching the engine its vocabulary. Engine keys (`severity code message path level key owner`) win a collision.
+: Merged into every emitted issue - where a consumer stamps `contact_name` or `segment` without teaching the validator its vocabulary. Validator keys (`severity code message path level key owner`) win a collision.
 
 **-limit** *n*
 : Stop after *n* error-severity issues; warnings do not count. 0 or omitted is unlimited. `-limit 1` is a transition gate.

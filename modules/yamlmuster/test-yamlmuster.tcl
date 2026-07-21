@@ -220,7 +220,7 @@ set is [$A validate $d -groups email -context {roster_email a@b.co}]
 check pred-passthrough {email_desync} [codes $is]
 set i [lindex $is 0]
 check pred-fills-severity warning [dict get $i severity]
-check pred-engine-path {rounds 0 messages 0} [dict get $i path]
+check pred-validator-path {rounds 0 messages 0} [dict get $i path]
 check pred-partial-message {to 'other@x.co' differs from roster 'a@b.co'} \
     [dict get $i message]
 
@@ -463,14 +463,14 @@ set d [dict replace $CLEAN rounds [list \
 set is [$A validate $d -limit 1]
 check limit-skips-warnings {draft_missing_number too_many_final_emails} [codes $is]
 
-# -extra stamps every issue; engine keys win the collision.
+# -extra stamps every issue; validator keys win the collision.
 set d [dict replace $CLEAN version 9.9]
 set is [$A validate $d -extra {contact_name Ada code SPOOF}]
 set i [lindex $is 0]
 check extra-stamped Ada [dict get $i contact_name]
-check extra-engine-wins version_unsupported [dict get $i code]
+check extra-validator-wins version_unsupported [dict get $i code]
 
-# Engine field names are reserved outright: an -extra pair named key or
+# Validator field names are reserved outright: an -extra pair named key or
 # owner is dropped even on issues that do not emit that field themselves
 # (a bad_node emits neither; unknown_key emits key but not owner).
 set B [yamlmuster new]
