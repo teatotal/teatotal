@@ -115,6 +115,8 @@ The base class renders every visible row into the text widget (no virtualization
 
 To a screen reader the widget presents as one text area, not a tree of rows and columns; assistive-technology structure (row navigation, expansion state) is not exposed. Cell editing, checkbox columns, and type-ahead are not built in; a host can assemble them from embedded windows, row tags, and key bindings.
 
+The list text does not carry the Text class bindtag, because an object list wants none of what that class does: its click gestures start a text selection and its motion keys scroll to an insert mark a list never maintains. The class's wheel scripts are kept. A host's own bindings go on the row tags, the widget, or the toplevel, all of which still run.
+
 ## DECLARATIVE ATTRIBUTES
 
 A consumer declares attributes on its rows: an id, a kind (bool or enum), a
