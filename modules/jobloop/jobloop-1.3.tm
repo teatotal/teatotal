@@ -1,7 +1,7 @@
 package require Tcl 9
 package require TclOO
 package require leash
-package provide jobloop 1.2.1
+package provide jobloop 1.3
 
 # jobloop - an event-loop job pool that owns each job's lifecycle, not just
 # its coroutine.
@@ -90,6 +90,7 @@ package provide jobloop 1.2.1
 #
 #   jobloop new jobs ?-log cmd? ?-logger service?
 #     jobs        the pool size: at most this many concurrent coroutines.
+#                 set_jobs_cap resizes it on a live pool.
 #     -log        a command prefix called with one string per dropped or
 #                 out-of-order report (a diagnostic channel).
 #     -logger     a logger(n) service name for the same (default "jobloop").
@@ -317,6 +318,17 @@ oo::class create ::jobloop::lifecycle {
     method jobs_cap {} { return $Jobs }
     method is_kind_held {kind} { return [dict exists $HeldKinds $kind] }
     method launched_count {} { return $Launched }
+
+    # set_jobs_cap - resize the pool: the global cap on concurrent
+    # coroutines, the same number construction took. Raising it drains
+    # the queue into the freed slots at once; lowering it disturbs
+    # nothing running - launches stop until completions bring the
+    # active count under the new cap. A kind without its own
+    # set_kind_cap follows this cap by default.
+    method set_jobs_cap {n} {
+        set Jobs $n
+        my _try_launch
+    }
 
     # set_kind_cap - a per-kind concurrency sub-cap inside the global Jobs
     # cap. A job of this kind launches only while fewer than <cap> of its

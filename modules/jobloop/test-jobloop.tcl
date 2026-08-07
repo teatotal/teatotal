@@ -227,6 +227,27 @@ check kindcap-light 2 [running_among $loop l1 l2]
 foreach j {h1 h2 h3 l1 l2} { wait_terminal $loop $j }
 $loop destroy
 
+# -- set_jobs_cap resizes a live pool --------------------------------------
+# Raising the cap drains the queue into the freed slots at once; lowering
+# it disturbs nothing running, and the queue waits until completions bring
+# the active count under the new cap.
+
+set loop [new_loop 1]
+foreach j {r1 r2 r3 r4} { $loop enqueue $j w_beats {beats 6 beat 30} }
+check resize-before 1 [running_among $loop r1 r2 r3 r4]
+$loop set_jobs_cap 3
+check resize-raise-launches 3 [running_among $loop r1 r2 r3 r4]
+check resize-raise-keeps-tail 1 [llength [$loop queued_jobs]]
+$loop set_jobs_cap 1
+pump 40
+check resize-lower-spares-running 3 [running_among $loop r1 r2 r3 r4]
+check resize-lower-holds-queue 1 [llength [$loop queued_jobs]]
+foreach j {r1 r2 r3} { wait_terminal $loop $j }
+wait_terminal $loop r4
+check resize-tail-done done [$loop state r4]
+check resize-cap-read 1 [$loop jobs_cap]
+$loop destroy
+
 # -- count_by_kind counts terminal jobs by kind and state --------------------
 
 set loop [new_loop 4]
