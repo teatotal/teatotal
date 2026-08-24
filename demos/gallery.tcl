@@ -39,6 +39,8 @@ set DEMOS [dict create \
         runargs {} teaches "markdown painted onto a text widget"] \
     leash      [dict create file leash-demo.tcl kind Tk page leash.md \
         runargs {} teaches "deferred work that dies with its owner"] \
+    dial       [dict create file dial-demo.tcl kind Tk page dial.md \
+        runargs {} teaches "a countdown that cannot be read backwards"] \
     searchfield [dict create file searchfield-demo.tcl kind Tk page searchfield.md \
         runargs {} teaches "the typed half of a query, merged by its consumer"] \
     querybuilder [dict create file querybuilder-demo.tcl kind Tk page querybuilder.md \
