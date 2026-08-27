@@ -51,7 +51,7 @@ check "the insert mark sits at the buffer end" 1 \
     [expr {[$T compare insert >= "end - 2 chars"]}]
 focus -force $T
 update
-foreach k {<Key-Down> <Key-End> <Key-Next> <Control-Key-b> <Control-Key-e>} {
+foreach k {<Key-Next> <Key-Prior> <Control-Key-b> <Control-Key-e>} {
     # Re-park the mark each round: a key that moved it would otherwise leave
     # the next key with nothing far away to scroll to, and pass for that.
     $T mark set insert "end - 1 chars"
@@ -61,6 +61,19 @@ foreach k {<Key-Down> <Key-End> <Key-Next> <Control-Key-b> <Control-Key-e>} {
     update
     check "$k leaves the view where the reader put it" 0.0 [lindex [$T yview] 0]
 }
+
+# The keys the module binds for itself move the cursor. They scroll - that is
+# their job - but they leave the insert mark where the render left it, which is
+# the whole difference from the class handlers that dragged the reader with it.
+$T mark set insert "end - 1 chars"
+set before [$T index insert]
+$T yview moveto 0
+update
+event generate $T <Key-End>
+update
+check "<Key-End> puts the cursor on the last row" \
+    [lindex [$d all_rendered_nodes] end] [$d cursor]
+check "<Key-End> leaves the insert mark alone" $before [$T index insert]
 
 # A press-drag-release paints no text selection.
 $T yview moveto 0
