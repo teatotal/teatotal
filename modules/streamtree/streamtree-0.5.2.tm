@@ -1,7 +1,7 @@
 package require Tcl 9
 package require Tk
 package require leash
-package provide streamtree 0.5.1
+package provide streamtree 0.5.2
 
 namespace eval ::streamtree {}
 
@@ -299,10 +299,19 @@ oo::class create ::streamtree::StreamTree {
     # bound is TailMark, the append point, which must sit at or after every
     # root's end: a root's content past it means TailMark drifted up into the
     # body and the next append will splice into that root.
+    #
+    # Siblings must not physically overlap, but the gate judges that in BUFFER
+    # order, not store order. A host may draw a sibling set in an order the store
+    # does not hold it in - a sorted view over an arrival-order store, seated
+    # only at the next rebuild (rebuild re-sorts each node's children for exactly
+    # this). Store order out of step with buffer order is a display concern the
+    # rebuild settles, not a mark desync: the marks stay well-formed, disjoint
+    # and nested. A primitive that draws one node out of place keeps its own
+    # store in step (expand and unhide reattach_last); the gate does not stand in
+    # for that.
     method check_regions {ids ps pe} {
         set probs [list]
-        set prev_end ""
-        set prev_key ""
+        set drawn [list]
         foreach id $ids {
             if {![dict exists $Nodes $id]} continue
             set key [my node_field $id key]
@@ -319,9 +328,6 @@ oo::class create ::streamtree::StreamTree {
             if {[$Text compare $e < $s]} {
                 lappend probs "$key: end($ei) before start($si)"
             }
-            if {$prev_end ne "" && [$Text compare $s < $prev_end]} {
-                lappend probs "$key start($si) overlaps prev '$prev_key' end($prev_end)"
-            }
             if {$ps eq ""} {
                 if {[$Text compare TailMark < $e]} {
                     lappend probs "TailMark([$Text index TailMark]) drifted above $key end($ei)"
@@ -330,6 +336,16 @@ oo::class create ::streamtree::StreamTree {
                 lappend probs "$key \[$si,$ei\] escapes its parent \[$ps,$pe\]"
             }
             lappend probs {*}[my check_regions [my node_field $id children] $si $ei]
+            lassign [split $si .] sl sc
+            lappend drawn [list [expr {$sl * 100000000 + $sc}] $si $ei $key]
+        }
+        set prev_end ""
+        set prev_key ""
+        foreach r [lsort -integer -index 0 $drawn] {
+            lassign $r _ si ei key
+            if {$prev_end ne "" && [$Text compare $si < $prev_end]} {
+                lappend probs "$key start($si) overlaps '$prev_key' end($prev_end)"
+            }
             set prev_end $ei
             set prev_key $key
         }
@@ -1162,6 +1178,18 @@ oo::class create ::streamtree::StreamTree {
     # middle relies on the insert shifting the lower end mark on its own). Both
     # insert and expand/unhide route through here.
     method render_row {id} {
+        # Draw editable and restore, as the primitives do. render_row is the one
+        # method that inserts a row's text; every primitive that reaches it has
+        # already made the widget editable, but a subclass helper (a host's own
+        # render_session, say) reaches it directly and can be one insert past a
+        # bracket that left the widget disabled. An insert against a disabled
+        # widget is silently dropped: the row draws no line, start and end land
+        # on the same empty point, and the right-gravity start splits from the
+        # left-gravity end on the next insert there - end before start. Self-
+        # bracketing here is a no-op for a caller already editable and keeps the
+        # zero-length row from ever forming.
+        set _st [$Text cget -state]
+        $Text configure -state normal
         set parent [my node_field $id parent]
         set kind   [my node_field $id kind]
         if {$parent eq ""} {
@@ -1202,6 +1230,7 @@ oo::class create ::streamtree::StreamTree {
         my node_set $id rendered 1
         foreach a $climb { $Text mark set [my node_field $a end] $rowend }
         my on_row_rendered $id
+        $Text configure -state $_st
     }
 
     # Un-render every node at once, for the two whole-buffer paths (rebuild,
@@ -1433,6 +1462,13 @@ oo::class create ::streamtree::StreamTree {
         if {![my drawable $id]} return
         set st [$Text cget -state]
         $Text configure -state normal
+        # The redraw lands at the parent's append point, last among the drawn
+        # siblings; the store follows the view (reattach_last) so the node is
+        # last there too, for the debounced resort to seat - the same late-draw
+        # contract expand lives under. Left first in the store while drawn last,
+        # the row would be spliced out of store order and jump on the next
+        # rebuild under an order-keeping sort.
+        my reattach_last $id
         my render_subtree $id
         $Text configure -state $st
         my check_invariant unhide
