@@ -1,7 +1,7 @@
 package require Tcl 9
 package require Tk
 package require leash
-package provide streamtree 0.5.0
+package provide streamtree 0.5.1
 
 namespace eval ::streamtree {}
 
@@ -76,7 +76,7 @@ namespace eval ::streamtree {}
 #     kind_rank kind             the rank a kind's run takes among siblings of mixed kinds
 #     sort_siblings ids          reorder a sibling set of one kind for display, keeping every node
 #     render_skip id             leave a node out of the view while keeping it in the store,
-#                                asked on every path that draws a node
+#                                asked wherever a node is drawn with its content in place
 #     rebuild_restore anchor     re-pin the view to a {kind key} top node after a rebuild
 #   Attributes
 #     attr_value node id         the value of a declared attribute on a node, read
@@ -1245,10 +1245,10 @@ oo::class create ::streamtree::StreamTree {
         my node_set $id rendered 0
     }
 
-    # insert: add a node and draw it when its row is due in the view (drawable:
-    # its parent drawn and open, itself neither hidden nor skipped). parent ""
-    # makes a root. -pos {before <id>} orders it before a sibling, else it
-    # appends.
+    # insert: add a node and draw it when it has a place in the view (placed:
+    # its parent drawn and open, itself not hidden; render_skip is not asked of
+    # a node whose content has yet to arrive). parent "" makes a root. -pos
+    # {before <id>} orders it before a sibling, else it appends.
     method insert {parent kind key payload args} {
         set before ""
         foreach {opt val} $args {
@@ -1279,7 +1279,7 @@ oo::class create ::streamtree::StreamTree {
         # (a folder heading counts its sessions through the folder->id map), so
         # the index must exist by the time render_row builds the line.
         my on_node_created $id
-        if {[my drawable $id]} { my render_row $id }
+        if {[my placed $id]} { my render_row $id }
         $Text configure -state $st
         my check_invariant insert
         return $id
@@ -1311,6 +1311,16 @@ oo::class create ::streamtree::StreamTree {
         if {[info exists AttrHidden]} { dict unset AttrHidden $id }
         if {$id eq $Cursor} { set Cursor "" }
         dict unset Nodes $id
+    }
+    # Put a node last among its siblings, in the store as at the append point.
+    method reattach_last {id} {
+        my detach_child $id
+        set parent [my node_field $id parent]
+        if {$parent eq ""} {
+            lappend Roots $id
+        } else {
+            my node_set $parent children [list {*}[my node_field $parent children] $id]
+        }
     }
     # Remove a node from its parent's child list (or from Roots for a root).
     method detach_child {id} {
@@ -1362,12 +1372,14 @@ oo::class create ::streamtree::StreamTree {
         my check_invariant item
     }
 
-    # expand: open a node and draw the children due in the view, each with its
+    # expand: open a node and draw what is due under it, each child with its
     # own open subtree. populate runs first, so a lazy host realizes the
-    # children this expand is about to draw. On a node that is not itself
-    # rendered, expand records the flag alone; the children draw when the
-    # node's own row does, or on the next rebuild. That makes opening one level
-    # everywhere a one-liner over any id set, e.g.
+    # children this expand is about to draw. A node with no row of its own
+    # draws it here when it is due, its subtree with it: the door back for a
+    # node render_skip kept out while it was empty. One whose parent is shut
+    # records the flag alone, and draws when the parent's row does, or on the
+    # next rebuild. That makes opening one level everywhere a one-liner over
+    # any id set, e.g.
     #   $t batch { lmap id [$t roots] { $t expand $id } }
     # and expand_subtree opens every level under one node.
     method expand {id} {
@@ -1375,7 +1387,15 @@ oo::class create ::streamtree::StreamTree {
         $Text configure -state normal
         my populate $id
         my node_set $id expanded 1
-        if {[my node_field $id rendered]} { my render_below $id }
+        if {[my node_field $id rendered]} {
+            my render_below $id
+        } elseif {[my drawable $id]} {
+            # Drawn late, the node lands as a late insert does: at its parent's
+            # append point, so last among its siblings in the store as in the
+            # view, for the next rebuild to seat under the sort.
+            my reattach_last $id
+            my render_subtree $id
+        }
         $Text configure -state $st
         my check_invariant expand
     }
@@ -1497,14 +1517,22 @@ oo::class create ::streamtree::StreamTree {
         my check_invariant reset
     }
 
-    # Whether a node's row is due in the view now: not hidden, not left out by
-    # render_skip, and, below a root, under a parent whose own row is drawn and
-    # open. Every path that draws a node asks this first, so a node kept out
-    # stays out whichever primitive reaches it.
-    method drawable {id} {
-        if {[my node_field $id hidden] || [my render_skip $id]} { return 0 }
+    # Whether a node has a place in the view: not hidden, and, below a root,
+    # under a parent whose own row is drawn and open. insert draws a new node
+    # on this alone: what decides a render_skip (the node's children, its
+    # aggregates) has not arrived at insert, so a skip asked then would answer
+    # for content that is not there.
+    method placed {id} {
+        if {[my node_field $id hidden]} { return 0 }
         set p [my node_field $id parent]
         return [expr {$p eq "" || ([my node_field $p rendered] && [my node_field $p expanded])}]
+    }
+    # Whether a node's row is due now: placed, and not left out by render_skip.
+    # Every path that draws a node with its content in place (expand, unhide,
+    # rebuild) asks this first, so a node kept out stays out whichever of them
+    # reaches it, and expand draws a node the skip kept out once it is due.
+    method drawable {id} {
+        return [expr {[my placed $id] && ![my render_skip $id]}]
     }
     # Render a node and, when it is open, what is due under it.
     method render_subtree {id} {
@@ -1542,7 +1570,8 @@ oo::class create ::streamtree::StreamTree {
     # not a filter). Default keeps store order; the subclass applies the active sort.
     method sort_siblings {ids} { return $ids }
     # Whether to leave a node (and its subtree) out of the view while keeping it
-    # in the store, asked on every path that draws a node. Default renders everything.
+    # in the store, asked wherever a node is drawn with its content in place
+    # (never at insert). Default renders everything.
     method render_skip {id} { return 0 }
     # Re-pin the view to a {kind key} anchor after a rebuild. Default best-effort.
     method rebuild_restore {anchor} {}

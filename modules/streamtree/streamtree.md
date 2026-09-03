@@ -31,7 +31,7 @@ streamtree renders a tree of abstract nodes into a single `text` widget: nodes n
 | `delete id` | `delete id` | removes the node and its subtree from view and store |
 | `detach id` | `detach id` | removes the row from view, keeps the node (and its open state) in the store |
 | `item id` | `item id -values ...` | rewrites the node's own row in place |
-| `expand id` / `collapse id` | `item id -open true/false` | draws / removes the body |
+| `expand id` / `collapse id` | `item id -open true/false` | draws / removes the body; `expand` also draws the node's own row when it has none and is due |
 | `hide id` / `unhide id` | `detach` + `move` | a reversible per-node filter (treeview has no first-class hide) |
 | `move id newparent` | `move id newparent end` | reparents, then rebuilds |
 | `column id -width N -minwidth M` | `column id -width N -minwidth M` | per-column width override and clamp |
@@ -78,7 +78,7 @@ Content / layout: `subject_label` (header over the subject column), `column_spec
 
 Row lifecycle (per node kind): `start_gravity`, `row_tags`, `on_node_created` (register domain indices before the row renders), `on_row_rendered` (wire bindings, nested content, selection), `on_before_delete` (drop domain indices), `populate` (called at the top of `expand`; a lazy host enumerates and attaches the node's children here, a materialized tree keeps the no-op default).
 
-Ordering and view membership: `kind_rank` (the integer rank a kind's run takes among siblings of mixed kinds, lowest first; the base class keeps each kind's nodes together, orders the runs by rank with ties in first-seen order, and hands each run to `sort_siblings` on its own, so that hook only ever sees one kind), `sort_siblings` (reorder a sibling set of one kind for display, keeping every node), `render_skip` (leave a node and its subtree out of the view while keeping it in the store; asked on every path that draws a node, so a skipped node stays out through `insert`, `expand`, `unhide` and `rebuild` alike), `rebuild_restore` (re-pin the viewport to a captured top node).
+Ordering and view membership: `kind_rank` (the integer rank a kind's run takes among siblings of mixed kinds, lowest first; the base class keeps each kind's nodes together, orders the runs by rank with ties in first-seen order, and hands each run to `sort_siblings` on its own, so that hook only ever sees one kind), `sort_siblings` (reorder a sibling set of one kind for display, keeping every node), `render_skip` (leave a node and its subtree out of the view while keeping it in the store; asked wherever a node is drawn with its content in place, so a skipped node stays out through `expand`, `unhide` and `rebuild` alike. `insert` does not ask it: what decides a skip, a node's children or aggregates, has not arrived when the node is born, so a new node draws on its place alone, and `expand` draws a node the skip kept out once it is due, no rebuild needed), `rebuild_restore` (re-pin the viewport to a captured top node).
 
 ## THE SUBCLASS SURFACE
 

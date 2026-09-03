@@ -23,9 +23,11 @@ proc tripped {} { return [expr {[info exists ::STREAMTREE_AUDIT_TRIPPED] ? 1 : 0
 # The line a node's row starts on, to check the roster against the buffer.
 proc line_of {d id} { return [lindex [split [$::T index [$d node_field $id start]] .] 0] }
 
-# A host of folders and files, folders nesting in folders. Skip holds the keys
-# render_skip keeps out of the view; Kinds counts the most kinds any one
-# sort_siblings call was handed, which the base class promises is one.
+# A host of folders and files, folders nesting in folders. render_skip keeps
+# out the keys in Skip and any folder with nothing under it, the skip a host
+# derives from content and so cannot answer at insert; Kinds counts the most
+# kinds any one sort_siblings call was handed, which the base class promises
+# is one.
 oo::class create Nested {
     superclass ::streamtree::StreamTree
     variable Skip Kinds
@@ -36,7 +38,10 @@ oo::class create Nested {
     }
     method skip {keys} { set Skip $keys }
     method kinds_seen {} { return $Kinds }
-    method render_skip {id} { return [expr {[my node_field $id key] in $Skip}] }
+    method render_skip {id} {
+        if {[my node_field $id key] in $Skip} { return 1 }
+        return [expr {[my node_field $id kind] eq "folder" && ![llength [my node_field $id children]]}]
+    }
     method kind_rank {kind} { return [expr {$kind eq "folder" ? 0 : 1}] }
     method sort_siblings {ids} {
         set n [llength [lsort -unique [lmap id $ids { my node_field $id kind }]]]
@@ -103,13 +108,15 @@ $d expand_subtree $l1
 check "expand_subtree opens every level under the node" [list $l1 $l2 $l3 $l4] [$d all_rendered_nodes]
 check "reveal and expand_subtree, invariant clean" 0 [tripped]
 
-# --- A skipped node stays out on every path that draws.
+# --- A skipped node stays out on every path that draws a node with its
+#     content in place; insert, where the content has yet to arrive, draws on
+#     the node's place alone.
 $d skip {kept}
 set kept [$d insert $l2 file kept [dict create label "kept out"]]
-check "insert does not draw a skipped node" 0 [$d node_field $kept rendered]
+check "insert draws a node before its skip can be judged" 1 [$d node_field $kept rendered]
 $d collapse $l2
 $d expand $l2
-check "expand does not draw it" 0 [$d node_field $kept rendered]
+check "expand asks the skip and leaves it out" 0 [$d node_field $kept rendered]
 $d hide $kept
 $d unhide $kept
 check "unhide does not draw it" 0 [$d node_field $kept rendered]
@@ -120,7 +127,8 @@ $d rebuild
 check "the skip lifted, the next rebuild draws it" 1 [$d node_field $kept rendered]
 $d skip {top}
 set top [$d insert "" folder top [dict create label "skipped root"]]
-check "a skipped root is off the roster" 0 [expr {$top in [$d all_rendered_nodes]}]
+$d rebuild
+check "a skipped root leaves the roster at the next rebuild" 0 [expr {$top in [$d all_rendered_nodes]}]
 $d cursor_set $top
 check "and refused the cursor" $l4 [$d cursor]
 $d hide $l1
@@ -129,14 +137,32 @@ check "a hidden root stays hidden through a rebuild" 0 [$d node_field $l1 render
 $d unhide $l1
 check "skips and hides, invariant clean" 0 [tripped]
 
+# --- A skip that content decides cannot be answered at insert: a folder is
+#     born empty, so a skip reading "nothing under it" says no. insert draws
+#     the folder on its place alone; the next rebuild asks the skip and drops
+#     it; and expand is the door back once a child has landed, no rebuild
+#     needed.
+set late [$d insert "" folder late [dict create label "born empty"]]
+check "insert draws a folder its skip cannot yet judge" 1 [$d node_field $late rendered]
+$d rebuild
+check "the next rebuild asks, and the empty folder goes" 0 [$d node_field $late rendered]
+set kid [$d insert $late file kid [dict create label "first child"]]
+check "a child born under an undrawn folder waits" 0 [$d node_field $kid rendered]
+$d expand $late
+check "expand draws the folder, now with content, and its child" {1 1} \
+    [list [$d node_field $late rendered] [$d node_field $kid rendered]]
+check "it came back at the tail, last among the roots as in the view" $late [lindex [$d roots] end]
+check "a late folder, invariant clean" 0 [tripped]
+
 # --- A folder holding files and sub-folders, inserted interleaved: the
 #     sub-folders come first by kind_rank, each run in sort_siblings order,
 #     and sort_siblings never sees two kinds at once.
 set mix [$d insert "" folder mix [dict create label mixed]]
 $d expand $mix
 foreach {kind key label} {file fz zeta folder fb beta file fa alpha folder fd delta} {
-    $d insert $mix $kind $key [dict create label $label]
+    set n($key) [$d insert $mix $kind $key [dict create label $label]]
 }
+foreach f {fb fd} { $d insert $n($f) file $f.x [dict create label x] }
 $d rebuild
 check "kinds line up by kind_rank, each run sorted" {fb fd fa fz} \
     [lmap id [$d node_field $mix children] { $d node_field $id key }]
