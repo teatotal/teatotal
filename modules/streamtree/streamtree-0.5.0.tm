@@ -40,11 +40,12 @@ namespace eval ::streamtree {}
 #
 # The base class owns every text-mark mutation behind a treeview-style primitive
 # ensemble - insert/delete/detach/item/expand/collapse/hide/unhide/move/rebuild,
-# the cursor the keyboard walks (treeview's focus row), plus reset and a content
-# door (append_open/emit/emit_window/append_close, and drop_loose to lift a
-# tagged run of it back out) for loose in-row content that is not itself a
-# node. A subclass drives the widget only through these and
-# never touches the text widget.
+# reveal and expand_subtree over a node's ancestors and descendants, the cursor
+# the keyboard walks (treeview's focus row), plus reset and a content door
+# (append_open/emit/emit_window/append_close, and drop_loose to lift a tagged
+# run of it back out) for loose in-row content that is not itself a node. A
+# subclass drives the widget only through these and never touches the text
+# widget.
 #
 # Hooks the subclass overrides (Template Method). Every hook has a working
 # default, so a minimal subclass overrides nothing and gets a plain tree whose
@@ -965,7 +966,7 @@ oo::class create ::streamtree::StreamTree {
 
     # Drawn is the same roster the walk steps over, so a node in the store with
     # no row on screen (a shut folder's child) is refused the cursor rather than
-    # sought out and scrolled to.
+    # sought out and scrolled to; reveal is the way to bring such a node out.
     method cursor_set {id} {
         if {$id eq $Cursor} return
         if {$id ne "" && !([my node_exists $id] && [my node_field $id rendered])} return
@@ -1368,6 +1369,7 @@ oo::class create ::streamtree::StreamTree {
     # node's own row does, or on the next rebuild. That makes opening one level
     # everywhere a one-liner over any id set, e.g.
     #   $t batch { lmap id [$t roots] { $t expand $id } }
+    # and expand_subtree opens every level under one node.
     method expand {id} {
         set st [$Text cget -state]
         $Text configure -state normal
@@ -1414,6 +1416,30 @@ oo::class create ::streamtree::StreamTree {
         my render_subtree $id
         $Text configure -state $st
         my check_invariant unhide
+    }
+
+    # reveal: bring a node's row into view whatever shuts it away, treeview's
+    # `see`. Every shut ancestor opens, outermost first so each draws under a
+    # drawn parent, then the row scrolls into view. A node hidden or skipped
+    # has no row to show, and the view stays put.
+    method reveal {id} {
+        my batch {
+            foreach a [lreverse [my ancestors $id]] {
+                if {![my node_field $a expanded]} { my expand $a }
+            }
+        }
+        if {[my node_field $id rendered]} { $Text see [my node_field $id start] }
+    }
+
+    # expand_subtree: open a node and every node under it, populated as it
+    # goes so a lazy tree opens to its full depth, the view anchored once for
+    # the whole sweep.
+    method expand_subtree {id} {
+        my batch { my open_below $id }
+    }
+    method open_below {id} {
+        my expand $id
+        foreach c [my node_field $id children] { my open_below $c }
     }
 
     # move: reparent a node, then rebuild. A move can re-key the node and folder

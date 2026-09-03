@@ -40,6 +40,8 @@ streamtree renders a tree of abstract nodes into a single `text` widget: nodes n
 | `cursor` / `cursor_set id` | `focus` / `focus id` | the row the keyboard walks from; `cursor_set` scrolls it into view and fires `-cursorcb` |
 | `cursor_move next\|prev\|first\|last` | (the class bindings) | step the cursor over the drawn rows |
 | `cursor_open 1\|0` | `item id -open true/false` | expand or collapse the cursor's own node |
+| `reveal id` | `see id` | opens every shut ancestor and scrolls the node's row into view |
+| `expand_subtree id` | `item -open true` down the subtree | opens a node and everything under it, the view anchored once |
 
 Every primitive owns its text-mark mutation and ends in `check_invariant`; a host never touches the underlying text widget.
 
@@ -48,6 +50,8 @@ Every primitive owns its text-mark mutation and ends in `check_invariant`; a hos
 ```tcl
 $t batch { lmap id [$t roots] { $t expand $id } }
 ```
+
+`expand_subtree id` opens every level under one node the same way, and `reveal id` opens the ancestors of one node and scrolls its row into view, the treeview `see`; a node that `hide` or `render_skip` keeps out has no row to reveal and the view stays put. `cursor_set` refuses a node with no row, so `reveal` is the step before it for a node shut away in a folder.
 
 ## THE CONTENT DOOR
 

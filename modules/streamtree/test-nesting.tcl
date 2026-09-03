@@ -89,6 +89,20 @@ check "every ancestor end rides the loose content forward" \
     [lmap id [list $l1 $l2 $l3 $l4] { $T index [$d node_field $id end] }]
 check "item, hide, unhide and the content door at depth, invariant clean" 0 [tripped]
 
+# --- reveal opens the way to a node shut three folders deep; expand_subtree
+#     opens everything under a node in one sweep.
+foreach id [list $l3 $l2 $l1] { $d collapse $id }
+check "shut at every level, the leaf is off the roster" [list $l1] [$d all_rendered_nodes]
+$d reveal $l4
+check "reveal opens every ancestor" {1 1 1} [lmap a [$d ancestors $l4] { $d node_field $a expanded }]
+check "and draws the row" 1 [$d node_field $l4 rendered]
+$d cursor_set $l4
+check "so the cursor may take it" $l4 [$d cursor]
+foreach id [list $l3 $l2 $l1] { $d collapse $id }
+$d expand_subtree $l1
+check "expand_subtree opens every level under the node" [list $l1 $l2 $l3 $l4] [$d all_rendered_nodes]
+check "reveal and expand_subtree, invariant clean" 0 [tripped]
+
 # --- A skipped node stays out on every path that draws.
 $d skip {kept}
 set kept [$d insert $l2 file kept [dict create label "kept out"]]
