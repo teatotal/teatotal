@@ -20,8 +20,10 @@ package require streamtree
 font create DemoList {*}[font actual TkTextFont]
 font create DemoBold {*}[font actual TkTextFont] -weight bold
 
-# A two-level tree: languages (folders) over files (rows). Each file carries a
-# size and a line count laid in the right-pinned columns.
+# Language folders over files (rows), one folder holding a sub-folder beside
+# its files: kind_rank lists the sub-folder first whatever the sort, then the
+# files in sort order. Each file carries a size and a line count laid in the
+# right-pinned columns.
 oo::class create DemoList {
     superclass ::streamtree::StreamTree
     variable Top Text Nodes Roots NextId ColTabs ColRightX ColW ColWMeasured \
@@ -49,15 +51,24 @@ oo::class create DemoList {
     method default_sort_dir {id} { return [expr {$id eq "name" ? "asc" : "desc"}] }
     method row_tags {kind} { return [expr {$kind eq "folder" ? "folderhead" : "filerow"}] }
     method start_gravity {kind} { return right }
+    method kind_rank {kind} { return [expr {$kind eq "folder" ? 0 : 1}] }
 
     method render_subject {node max} {
         if {[my node_field $node kind] eq "folder"} {
             set marker [expr {[my node_field $node expanded] ? "▾" : "▸"}]
             set n [llength [my node_field $node children]]
-            return [dict create subject "$marker [my node_pget $node label] ($n)" tags {} meta_run 0]
+            set subject "$marker [my node_pget $node label] ($n)"
+            set meta 0
+        } else {
+            set subject [my truncate_px [my node_pget $node label] $max DemoList]
+            set meta 1
         }
-        return [dict create subject [my truncate_px [my node_pget $node label] $max DemoList] \
-            tags {} meta_run 1]
+        # The row indents by its depth through a tag over the subject: a subject
+        # tag is laid again by an in-place item rewrite, where one added after
+        # the row rendered would be lost.
+        set depth depth[llength [my ancestors $node]]
+        return [dict create subject $subject \
+            tags [list [list $depth 0 [string length $subject]]] meta_run $meta]
     }
     method cell_values {node} {
         if {[my node_field $node kind] eq "folder"} { return {{size {}} {lines {}}} }
@@ -74,6 +85,8 @@ oo::class create DemoList {
         return 0
     }
     method subject_label {} { return "File" }
+    # Handed one kind at a time. A folder's payload has no size or lines, so
+    # folders tie under those sorts and keep their order.
     method sort_siblings {ids} {
         if {[llength $ids] == 0} { return $ids }
         set keyed [lmap id $ids { list $id [my sort_key [my node_payload $id] $SortKey] }]
@@ -96,9 +109,12 @@ oo::class create DemoList {
     method configure_tags {} {
         $Text tag configure folderhead -font DemoBold -foreground [my colour ink] \
             -spacing1 10 -spacing3 2 -wrap none
-        $Text tag configure filerow -lmargin1 16 -lmargin2 16 -spacing3 1 \
+        $Text tag configure filerow -spacing3 1 \
             -foreground [my colour ink] -font DemoList -wrap none
         $Text tag configure meta -foreground [my colour muted]
+        for {set n 0} {$n < 4} {incr n} {
+            $Text tag configure depth$n -lmargin1 [expr {16 * $n}] -lmargin2 [expr {16 * $n}]
+        }
     }
 
     # ---- demo data / interaction ----
@@ -107,11 +123,14 @@ oo::class create DemoList {
         if {[my node_field $id expanded]} { my collapse $id } else { my expand $id }
         my item $id
     }
-    method add_folder {name files} {
-        set fid [my insert "" folder $name [dict create label $name]]
+    # A folder is keyed by its path, so a name may recur at another depth.
+    method add_folder {parent name files} {
+        set pid [expr {$parent eq "" ? "" : [dict get $FolderId $parent]}]
+        set key [expr {$parent eq "" ? $name : "$parent/$name"}]
+        set fid [my insert $pid folder $key [dict create label $name]]
         my node_set $fid expanded 1
         foreach {fname size lines} $files {
-            my insert $fid file "$name/$fname" [dict create label $fname size $size lines $lines]
+            my insert $fid file "$key/$fname" [dict create label $fname size $size lines $lines]
         }
         my item $fid
     }
@@ -139,9 +158,10 @@ oo::class create DemoList {
 pack [ttk::frame .f] -fill both -expand 1
 .f configure -width 760 -height 520
 set d [DemoList new .f]
-$d add_folder Tcl    {streamtree.tm 41 1140  sessions.tcl 92 2470  drag.tcl 4 110}
-$d add_folder Python {parser.py 18 520  model.py 33 980  cli.py 7 240}
-$d add_folder Rust   {lib.rs 12 360  main.rs 5 150}
+$d add_folder "" Tcl    {streamtree.tm 41 1140  sessions.tcl 92 2470  drag.tcl 4 110}
+$d add_folder Tcl tests {test-cursor.tcl 4 109  test-primitives.tcl 5 128}
+$d add_folder "" Python {parser.py 18 520  model.py 33 980  cli.py 7 240}
+$d add_folder "" Rust   {lib.rs 12 360  main.rs 5 150}
 # The folders streamed in live in arrival order; one rebuild seats them under
 # the active sort (Size, descending) so the initial view matches the heading.
 $d rebuild

@@ -1,7 +1,8 @@
 #!/usr/bin/env wish9.0
 # Depth is not a number the base class knows. A node four levels down is a row
 # like any other: the cursor walks to it, the audit gate sees its region inside
-# its parent's, and render_skip keeps it out on every path that could draw it.
+# its parent's, render_skip keeps it out on every path that could draw it, and
+# a sibling set mixing kinds lines up by kind_rank before each kind sorts.
 
 package require Tcl 9
 package require Tk
@@ -23,17 +24,23 @@ proc tripped {} { return [expr {[info exists ::STREAMTREE_AUDIT_TRIPPED] ? 1 : 0
 proc line_of {d id} { return [lindex [split [$::T index [$d node_field $id start]] .] 0] }
 
 # A host of folders and files, folders nesting in folders. Skip holds the keys
-# render_skip keeps out of the view.
+# render_skip keeps out of the view; Kinds counts the most kinds any one
+# sort_siblings call was handed, which the base class promises is one.
 oo::class create Nested {
     superclass ::streamtree::StreamTree
-    variable Skip
+    variable Skip Kinds
     constructor {parent} {
         set Skip [list]
+        set Kinds 0
         my setup $parent
     }
     method skip {keys} { set Skip $keys }
+    method kinds_seen {} { return $Kinds }
     method render_skip {id} { return [expr {[my node_field $id key] in $Skip}] }
+    method kind_rank {kind} { return [expr {$kind eq "folder" ? 0 : 1}] }
     method sort_siblings {ids} {
+        set n [llength [lsort -unique [lmap id $ids { my node_field $id kind }]]]
+        if {$n > $Kinds} { set Kinds $n }
         set keyed [lmap id $ids { list $id [my node_pget $id label] }]
         return [lmap e [lsort -dictionary -index 1 $keyed] { lindex $e 0 }]
     }
@@ -107,6 +114,35 @@ $d rebuild
 check "a hidden root stays hidden through a rebuild" 0 [$d node_field $l1 rendered]
 $d unhide $l1
 check "skips and hides, invariant clean" 0 [tripped]
+
+# --- A folder holding files and sub-folders, inserted interleaved: the
+#     sub-folders come first by kind_rank, each run in sort_siblings order,
+#     and sort_siblings never sees two kinds at once.
+set mix [$d insert "" folder mix [dict create label mixed]]
+$d expand $mix
+foreach {kind key label} {file fz zeta folder fb beta file fa alpha folder fd delta} {
+    $d insert $mix $kind $key [dict create label $label]
+}
+$d rebuild
+check "kinds line up by kind_rank, each run sorted" {fb fd fa fz} \
+    [lmap id [$d node_field $mix children] { $d node_field $id key }]
+check "sort_siblings was handed one kind at a time" 1 [$d kinds_seen]
+check "the mixed set drew in that order" {fb fd fa fz} \
+    [lmap id [lrange [$d all_rendered_nodes] end-3 end] { $d node_field $id key }]
+
+# With the default kind_rank every kind ranks alike, and the kinds keep the
+# order they first appear in.
+pack [ttk::frame .g] -fill both -expand 1
+set plain [::streamtree::StreamTree new]
+$plain setup .g
+set r [$plain insert "" folder r [dict create label r]]
+$plain expand $r
+foreach {kind key} {file a folder b file c folder d} {
+    $plain insert $r $kind $key [dict create label $key]
+}
+$plain rebuild
+check "the default rank keeps kinds in first-seen order" {a c b d} \
+    [lmap id [$plain node_field $r children] { $plain node_field $id key }]
 
 # --- The gate sees a nested desync. Level three's end mark pushed past its
 #     parent's leaves every root region intact, so a roots-only audit would

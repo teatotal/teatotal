@@ -74,7 +74,7 @@ Content / layout: `subject_label` (header over the subject column), `column_spec
 
 Row lifecycle (per node kind): `start_gravity`, `row_tags`, `on_node_created` (register domain indices before the row renders), `on_row_rendered` (wire bindings, nested content, selection), `on_before_delete` (drop domain indices), `populate` (called at the top of `expand`; a lazy host enumerates and attaches the node's children here, a materialized tree keeps the no-op default).
 
-Rebuild: `sort_siblings` (reorder a sibling set for display, keeping every node), `render_skip` (leave a node and its subtree out of the view while keeping it in the store; asked on every path that draws a node, so a skipped node stays out through `insert`, `expand`, `unhide` and `rebuild` alike), `rebuild_restore` (re-pin the viewport to a captured top node).
+Ordering and view membership: `kind_rank` (the integer rank a kind's run takes among siblings of mixed kinds, lowest first; the base class keeps each kind's nodes together, orders the runs by rank with ties in first-seen order, and hands each run to `sort_siblings` on its own, so that hook only ever sees one kind), `sort_siblings` (reorder a sibling set of one kind for display, keeping every node), `render_skip` (leave a node and its subtree out of the view while keeping it in the store; asked on every path that draws a node, so a skipped node stays out through `insert`, `expand`, `unhide` and `rebuild` alike), `rebuild_restore` (re-pin the viewport to a captured top node).
 
 ## THE SUBCLASS SURFACE
 

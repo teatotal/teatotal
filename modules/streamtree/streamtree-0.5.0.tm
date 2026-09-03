@@ -71,8 +71,9 @@ namespace eval ::streamtree {}
 #     on_before_delete id        drop the node's domain indices before it leaves the store
 #     populate id                realize a lazy node's children at the top of expand,
 #                                before the base class draws them
-#   Rebuild
-#     sort_siblings ids          reorder a sibling set for display, keeping every node
+#   Ordering and view membership
+#     kind_rank kind             the rank a kind's run takes among siblings of mixed kinds
+#     sort_siblings ids          reorder a sibling set of one kind for display, keeping every node
 #     render_skip id             leave a node out of the view while keeping it in the store,
 #                                asked on every path that draws a node
 #     rebuild_restore anchor     re-pin the view to a {kind key} top node after a rebuild
@@ -1429,8 +1430,8 @@ oo::class create ::streamtree::StreamTree {
 
     # rebuild: re-render the whole list from the durable store, preserving the
     # reader's view. The store survives (it is the model), so this re-sorts the
-    # sibling order in place (the sort_siblings hook, keeping every node), then
-    # wipes the buffer and re-lays every node
+    # sibling order in place (rank_siblings over the kind_rank and sort_siblings
+    # hooks, keeping every node), then wipes the buffer and re-lays every node
     # whose row is due, root to leaf. A node the render_skip hook rejects stays
     # in the store but leaves the view, its subtree with it. Store order tracks
     # display order, so a sort reorders Roots and each node's children, not
@@ -1440,9 +1441,9 @@ oo::class create ::streamtree::StreamTree {
         $Text configure -state normal
         set at_top [expr {[lindex [$Text yview] 0] <= 0.0001}]
         set anchor [my top_visible_node]
-        set Roots [my sort_siblings $Roots]
+        set Roots [my rank_siblings $Roots]
         foreach id [my all_node_ids] {
-            my node_set $id children [my sort_siblings [my node_field $id children]]
+            my node_set $id children [my rank_siblings [my node_field $id children]]
         }
         # Un-render everything (marks, text, tags) so the re-render starts from
         # a clean buffer with no stale marks left to be dragged into an overlap.
@@ -1493,8 +1494,26 @@ oo::class create ::streamtree::StreamTree {
     }
     # Every node id in the store, for the pre-rebuild render-state reset.
     method all_node_ids {} { return [dict keys $Nodes] }
-    # Reorder a sibling set for display, keeping every node (a sort, not a
-    # filter). Default keeps store order; the subclass applies the active sort.
+    # A sibling set in display order: the nodes of one kind kept together, the
+    # kinds in kind_rank order (ties keep first-seen order), each kind's run in
+    # the order sort_siblings gives it. A set of one kind, the common case,
+    # goes to sort_siblings whole, so the hook only ever sees one kind.
+    method rank_siblings {ids} {
+        if {[llength $ids] < 2} { return $ids }
+        set runs [dict create]
+        foreach id $ids { dict lappend runs [my node_field $id kind] $id }
+        if {[dict size $runs] < 2} { return [my sort_siblings $ids] }
+        set out [list]
+        foreach e [lsort -integer -index 1 [lmap k [dict keys $runs] { list $k [my kind_rank $k] }]] {
+            lappend out {*}[my sort_siblings [dict get $runs [lindex $e 0]]]
+        }
+        return $out
+    }
+    # The integer rank a kind's run takes among siblings of mixed kinds, lowest
+    # first (folders above files, say). Default ranks every kind alike.
+    method kind_rank {kind} { return 0 }
+    # Reorder a sibling set of one kind for display, keeping every node (a sort,
+    # not a filter). Default keeps store order; the subclass applies the active sort.
     method sort_siblings {ids} { return $ids }
     # Whether to leave a node (and its subtree) out of the view while keeping it
     # in the store, asked on every path that draws a node. Default renders everything.
