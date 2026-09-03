@@ -1,8 +1,9 @@
 #!/usr/bin/env wish9.0
 # Depth is not a number the base class knows. A node four levels down is a row
 # like any other: the cursor walks to it, the audit gate sees its region inside
-# its parent's, render_skip keeps it out on every path that could draw it, and
-# a sibling set mixing kinds lines up by kind_rank before each kind sorts.
+# its parent's, render_skip keeps it out wherever it is drawn with its content
+# in place, and a sibling set mixing kinds lines up by kind_rank before each
+# kind sorts.
 
 package require Tcl 9
 package require Tk

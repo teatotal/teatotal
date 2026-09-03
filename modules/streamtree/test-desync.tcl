@@ -1,6 +1,6 @@
 #!/usr/bin/env wish9.0
-# The three desyncs 0.5.2 settled, each guarded here so questlog's suite is not
-# the only thing that catches a regression.
+# The three desyncs 0.5.2 settled, each guarded here so a consuming project's
+# suite is not the only thing that catches a regression.
 #
 #   unhide       drew a shown row at the folder's append point (the tail) but
 #                left the node where it sat in the store. Under a store-order
