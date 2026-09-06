@@ -277,17 +277,11 @@ oo::class create ::streamtree::StreamTree {
 
     # ---- subtree aggregation -----------------------------------------
     #
-    # What a node adds up to: aggregate_add folded over the node and every
-    # node under it, parents before children, from aggregate_seed. The host
-    # supplies both (a count of the leaves, a size summed from the payloads
-    # beneath a container); the base class supplies the walk, and only the
-    # walk: nothing is cached, so a move, a delete, a hide or a rewritten
-    # payload is in the next answer with no ledger to fall behind. With shown
-    # set, a hidden node is left out with its whole subtree: the hidden flag
-    # is the one filter the store carries, so one fold answers both
-    # "everything under here" and "what survives the hides". Open or shut and
-    # render_skip are draw-time decisions the fold does not consult: it reads
-    # the store, not the buffer.
+    # What a node adds up to: aggregate_add folded from aggregate_seed over
+    # the node and everything under it, parents before children. Nothing is
+    # cached, so a move, a delete, a hide or a rewritten payload lands in the
+    # next answer with no ledger to fall behind. With shown set, a hidden
+    # node's subtree is left out too; streamtree.md has the full contract.
     method node_aggregate {id {shown 0}} {
         return [my fold_subtree [my aggregate_seed] $id $shown]
     }
