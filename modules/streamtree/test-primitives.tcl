@@ -114,7 +114,40 @@ check "hide a session, invariant clean" 0 [tripped]
 $d unhide $s3
 check "unhide a session, invariant clean" 0 [tripped]
 
+# An insert before a sibling seats the row there, in the store and the buffer
+# alike: before a right-gravity session, before a left-gravity subagent (whose
+# start mark must not swallow the new row), before a hidden sibling (the row
+# goes before the next drawn one), before a root, and before a sibling the
+# parent does not hold, which appends.
+proc line_of {id} { return [lindex [split [$::T index [$::d node_field $id start]] .] 0] }
+proc row_text {id} { return [$::T get [$::d node_field $id start] "[$::d node_field $id start] lineend"] }
+proc abut {a b} { return [$::T compare [$::d node_field $a end] == [$::d node_field $b start]] }
+set s0 [$d insert $f1 session s0 {label first n 0} -pos [list before $s1]]
+check "before a session: first in the store" [list $s0 $s1 $s2] [$d node_field $f1 children]
+check "and first in the buffer, abutting the sibling" {1 1} \
+    [list [expr {[line_of $s0] < [line_of $s1]}] [abut $s0 $s1]]
+check "the right-gravity sibling's start stays on its own row" 1 [string match {*alpha*} [row_text $s1]]
+set a2 [$d insert $s1 subagent a2 {label helper n 2} -pos [list before $a1]]
+check "before a subagent: first in the store" [list $a2 $a1] [$d node_field $s1 children]
+check "and first in the buffer, abutting the sibling" {1 1} \
+    [list [expr {[line_of $a2] < [line_of $a1]}] [abut $a2 $a1]]
+check "the left-gravity sibling's start is re-seated past the new row" 1 [string match {*worker*} [row_text $a1]]
+$d hide $s1
+set sx [$d insert $f1 session sx {label extra n 4} -pos [list before $s1]]
+check "before a hidden sibling: the store has it there" [list $s0 $sx $s1 $s2] [$d node_field $f1 children]
+check "and the buffer has it before the next drawn sibling" {1 1} \
+    [list [expr {[line_of $sx] < [line_of $s2]}] [abut $sx $s2]]
+$d unhide $s1
+set f0 [$d insert "" folder f0 {label ProjectZero n 0} -pos [list before $f1]]
+check "before a root: first among the roots" [list $f0 $f1 $f2] [$d roots]
+check "and on the first line" 1 [line_of $f0]
+set sy [$d insert $f1 session sy {label stray n 5} -pos [list before $s3]]
+check "before a sibling the parent does not hold: appended" $sy [lindex [$d node_field $f1 children] end]
+check "and drawn last under the parent" 1 [expr {[line_of $sy] > [line_of $s1]}]
+check "inserts before siblings, invariant clean" 0 [tripped]
+
 # Delete everything; the buffer returns to its empty-baseline mark count.
+$d delete $f0
 $d delete $a1
 $d delete $s1
 $d delete $s2

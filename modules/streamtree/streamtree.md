@@ -27,7 +27,7 @@ streamtree renders a tree of abstract nodes into a single `text` widget: nodes n
 
 | streamtree | ttk::treeview | Notes |
 |---|---|---|
-| `insert parent kind key payload` | `insert parent end -id ...` | `kind` selects the row's per-node-type hooks (`start_gravity`, `row_tags`, ...); returns a node id; renders now if the parent is open and the node is not hidden |
+| `insert parent kind key payload ?-pos {before id}?` | `insert parent index -id ...` | `kind` selects the row's per-node-type hooks (`start_gravity`, `row_tags`, ...); returns a node id; renders now if the parent is open and the node is not hidden; `-pos {before id}` seats it before that sibling in the store and the view alike, else it goes last |
 | `delete id` | `delete id` | removes the node and its subtree from view and store |
 | `detach id` | `detach id` | removes the row from view, keeps the node (and its open state) in the store |
 | `item id` | `item id -values ...` | rewrites the node's own row in place |

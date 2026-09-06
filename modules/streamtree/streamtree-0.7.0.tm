@@ -1203,15 +1203,19 @@ oo::class create ::streamtree::StreamTree {
     # this and nothing else.
     method attr_value {node id} { return [my node_pget $node $id] }
 
-    # Lay a node's row at its parent's append point and register its marks: the
-    # one home for the right-gravity temp-mark insert and the ancestor-end
-    # advance. A left-gravity end mark stays left of an insert, so every
-    # ancestor whose end currently sits at the append point must be carried
-    # forward past the new row (an ancestor's end follows only its own last
-    # descendant down; a node in the middle relies on the insert shifting the
-    # lower end mark on its own). Both insert and expand/unhide route through
-    # here.
-    method render_row {id} {
+    # Lay a node's row and register its marks, at its parent's append point or,
+    # given a drawn sibling, before that sibling's row: the one home for the
+    # right-gravity temp-mark insert and the ancestor-end advance. A
+    # left-gravity end mark stays left of an insert, so every ancestor whose
+    # end currently sits at the append point must be carried forward past the
+    # new row (an ancestor's end follows only its own last descendant down; a
+    # node in the middle relies on the insert shifting the lower end mark on
+    # its own). Before a sibling, the only marks at the insert index are the
+    # sibling's start and the ends of what precedes it, an ancestor's end
+    # lying past every descendant's; the ends keep left of the new row on
+    # their gravity and the sibling's start is re-seated past it whatever its
+    # own. insert, expand and unhide all route through here.
+    method render_row {id {before ""}} {
         # Editable on entry, as the primitives are: a host's own draw helper
         # reaches render_row outside any primitive, and an insert against a
         # disabled widget is dropped silently, leaving a zero-length row whose
@@ -1220,7 +1224,9 @@ oo::class create ::streamtree::StreamTree {
         $Text configure -state normal
         set parent [my node_field $id parent]
         set kind   [my node_field $id kind]
-        if {$parent eq ""} {
+        if {$before ne ""} {
+            set ins [my node_field $before start]
+        } elseif {$parent eq ""} {
             # A root appends after every existing one, so its append point is the
             # true buffer end by definition: re-anchor TailMark there rather than
             # trust a value an upstream op may have drifted into a folder body.
@@ -1246,6 +1252,7 @@ oo::class create ::streamtree::StreamTree {
         my apply_line $id $rstart $info
         set rowend [$Text index $tmp]
         $Text mark unset $tmp
+        if {$before ne ""} { $Text mark set [my node_field $before start] $rowend }
         set sm "${id}_s"
         $Text mark set $sm $rstart
         $Text mark gravity $sm [my start_gravity $kind]
@@ -1303,8 +1310,10 @@ oo::class create ::streamtree::StreamTree {
     }
 
     # insert: add a node and draw it when it has a place in the view. parent ""
-    # makes a root. -pos {before <id>} orders it before a sibling, else it
-    # appends.
+    # makes a root. -pos {before <id>} seats it before that sibling in the
+    # store and, when the node draws, in the view: its row goes before the
+    # first drawn sibling from there on, so a hidden one between is stepped
+    # over. A sibling not found, or no -pos, appends.
     method insert {parent kind key payload args} {
         set before ""
         foreach {opt val} $args {
@@ -1313,29 +1322,21 @@ oo::class create ::streamtree::StreamTree {
         set st [$Text cget -state]
         $Text configure -state normal
         set id [my node_new $kind $parent $key $payload]
-        if {$parent eq ""} {
-            if {$before ne ""} {
-                set i [lsearch -exact $Roots $before]
-                set Roots [linsert $Roots [expr {$i < 0 ? "end" : $i}] $id]
-            } else {
-                lappend Roots $id
-            }
-        } else {
-            set kids [my node_field $parent children]
-            if {$before ne ""} {
-                set i [lsearch -exact $kids $before]
-                set kids [linsert $kids [expr {$i < 0 ? "end" : $i}] $id]
-            } else {
-                lappend kids $id
-            }
-            my node_set $parent children $kids
+        if {$parent eq ""} { set kids $Roots } else { set kids [my node_field $parent children] }
+        set i [expr {$before eq "" ? -1 : [lsearch -exact $kids $before]}]
+        if {$i < 0} { set i [llength $kids] }
+        set kids [linsert $kids $i $id]
+        if {$parent eq ""} { set Roots $kids } else { my node_set $parent children $kids }
+        set at ""
+        foreach s [lrange $kids [expr {$i + 1}] end] {
+            if {[my node_field $s rendered]} { set at $s; break }
         }
         # Let the subclass register its domain indices for this node before the
         # row renders: render_subject may read the node back through an index
         # (a container's row counting its children through a key->id map), so
         # the index must exist by the time render_row builds the line.
         my on_node_created $id
-        if {[my placed $id]} { my render_row $id }
+        if {[my placed $id]} { my render_row $id $at }
         $Text configure -state $st
         my check_invariant insert
         return $id
