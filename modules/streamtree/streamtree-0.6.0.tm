@@ -268,7 +268,7 @@ oo::class create ::streamtree::StreamTree {
         return $out
     }
     # Every node under a node, parents before children, siblings in store
-    # order: the order rebuild lays their rows in, to any depth.
+    # order: the order their rows take in the buffer, to any depth.
     method descendants {id} {
         set out [list]
         foreach c [my node_field $id children] { lappend out $c {*}[my descendants $c] }
@@ -277,11 +277,11 @@ oo::class create ::streamtree::StreamTree {
 
     # ---- subtree aggregation -----------------------------------------
     #
-    # What a node adds up to: aggregate_add folded from aggregate_seed over
-    # the node and everything under it, parents before children. Nothing is
-    # cached, so a move, a delete, a hide or a rewritten payload lands in the
-    # next answer with no ledger to fall behind. With shown set, a hidden
-    # node's subtree is left out too; streamtree.md has the full contract.
+    # What a node adds up to: the seed hook's value with the node and
+    # everything under it taken in through the add hook, parents before
+    # children. Nothing is cached, so a move, a delete, a hide or a rewritten
+    # payload is in the next answer. With shown set, a hidden node's subtree
+    # is left out too; streamtree.md has the full contract.
     method node_aggregate {id {shown 0}} {
         return [my fold_subtree [my aggregate_seed] $id $shown]
     }
@@ -326,15 +326,12 @@ oo::class create ::streamtree::StreamTree {
     # root's end: a root's content past it means TailMark drifted up into the
     # body and the next append will splice into that root.
     #
-    # Siblings must not physically overlap, but the gate judges that in BUFFER
-    # order, not store order. A host may draw a sibling set in an order the store
-    # does not hold it in - a sorted view over an arrival-order store, seated
-    # only at the next rebuild (rebuild re-sorts each node's children for exactly
-    # this). Store order out of step with buffer order is a display concern the
-    # rebuild settles, not a mark desync: the marks stay well-formed, disjoint
-    # and nested. A primitive that draws one node out of place keeps its own
-    # store in step (expand and unhide reattach_last); the gate does not stand in
-    # for that.
+    # Overlap between siblings is judged in BUFFER order, not store order: a
+    # host may draw a sibling set in an order the store does not hold it in
+    # (a sorted view over an arrival-order store, seated at the next rebuild),
+    # and that is the rebuild's to settle, not a mark desync. A primitive that
+    # draws one node out of place puts it last in the store itself; the gate
+    # does not check store order.
     method check_regions {ids ps pe} {
         set probs [list]
         set drawn [list]
@@ -881,7 +878,7 @@ oo::class create ::streamtree::StreamTree {
 
     # Order a list of domain keys by the active sort. Each value reads a
     # payload field through the sort_key hook; src maps a key to its payload.
-    # A subclass helper: the base class's own ordering is rank_siblings.
+    # A subclass helper, off the base class's own ordering path.
     method sort_paths {paths src} {
         set keyed [list]
         foreach p $paths {
@@ -896,8 +893,7 @@ oo::class create ::streamtree::StreamTree {
     }
 
     # Order keys by a key->value map. mode picks the lsort comparator: -real
-    # for a numeric value, -dictionary for a string label. A subclass helper,
-    # as sort_paths is.
+    # for a numeric value, -dictionary for a string label. A subclass helper too.
     method sort_folders {order valmap {mode -real}} {
         set dflt [expr {$mode eq "-real" ? 0.0 : ""}]
         set keyed [lmap f $order { list $f [dict getdef $valmap $f $dflt] }]
@@ -986,8 +982,7 @@ oo::class create ::streamtree::StreamTree {
     }
 
     # Every node currently drawn in the widget, parents before children and
-    # siblings in store order, to any depth. A root left out by render_skip is
-    # absent along with everything under it.
+    # siblings in store order, to any depth.
     method all_rendered_nodes {} {
         set out [list]
         foreach rid $Roots {
@@ -1009,7 +1004,7 @@ oo::class create ::streamtree::StreamTree {
 
     # Drawn is the same roster the walk steps over, so a node in the store with
     # no row on screen (a shut folder's child) is refused the cursor rather than
-    # sought out and scrolled to; reveal is the way to bring such a node out.
+    # sought out and scrolled to.
     method cursor_set {id} {
         if {$id eq $Cursor} return
         if {$id ne "" && !([my node_exists $id] && [my node_field $id rendered])} return
@@ -1205,16 +1200,10 @@ oo::class create ::streamtree::StreamTree {
     # lower end mark on its own). Both insert and expand/unhide route through
     # here.
     method render_row {id} {
-        # Draw editable and restore, as the primitives do. render_row is the one
-        # method that inserts a row's text; every primitive that reaches it has
-        # already made the widget editable, but a subclass helper (a host's own
-        # per-kind draw method, say) reaches it directly and can be one insert
-        # past a bracket that left the widget disabled. An insert against a disabled
-        # widget is silently dropped: the row draws no line, start and end land
-        # on the same empty point, and the right-gravity start splits from the
-        # left-gravity end on the next insert there - end before start. Self-
-        # bracketing here is a no-op for a caller already editable and keeps the
-        # zero-length row from ever forming.
+        # Editable on entry, as the primitives are: a host's own draw helper
+        # reaches render_row outside any primitive, and an insert against a
+        # disabled widget is dropped silently, leaving a zero-length row whose
+        # right-gravity start splits from its left-gravity end at the next insert.
         set _st [$Text cget -state]
         $Text configure -state normal
         set parent [my node_field $id parent]
@@ -1301,10 +1290,9 @@ oo::class create ::streamtree::StreamTree {
         my node_set $id rendered 0
     }
 
-    # insert: add a node and draw it when it has a place in the view (placed:
-    # its parent drawn and open, itself not hidden; render_skip is not asked of
-    # a node whose content has yet to arrive). parent "" makes a root. -pos
-    # {before <id>} orders it before a sibling, else it appends.
+    # insert: add a node and draw it when it has a place in the view. parent ""
+    # makes a root. -pos {before <id>} orders it before a sibling, else it
+    # appends.
     method insert {parent kind key payload args} {
         set before ""
         foreach {opt val} $args {
@@ -1368,7 +1356,10 @@ oo::class create ::streamtree::StreamTree {
         if {$id eq $Cursor} { set Cursor "" }
         dict unset Nodes $id
     }
-    # Put a node last among its siblings, in the store as at the append point.
+    # Put a node last among its siblings in the store, where a late draw puts
+    # its row (the parent's append point). Store order tracks display order,
+    # so a row drawn last but left where it sat in the store would jump at the
+    # next rebuild under a sort that keeps store order, the default.
     method reattach_last {id} {
         my detach_child $id
         set parent [my node_field $id parent]
@@ -1437,7 +1428,6 @@ oo::class create ::streamtree::StreamTree {
     # next rebuild. That makes opening one level everywhere a one-liner over
     # any id set, e.g.
     #   $t batch { lmap id [$t roots] { $t expand $id } }
-    # and expand_subtree opens every level under one node.
     method expand {id} {
         set st [$Text cget -state]
         $Text configure -state normal
@@ -1446,9 +1436,6 @@ oo::class create ::streamtree::StreamTree {
         if {[my node_field $id rendered]} {
             my render_below $id
         } elseif {[my drawable $id]} {
-            # Drawn late, the node lands as a late insert does: at its parent's
-            # append point, so last among its siblings in the store as in the
-            # view, for the next rebuild to seat under the sort.
             my reattach_last $id
             my render_subtree $id
         }
@@ -1478,7 +1465,7 @@ oo::class create ::streamtree::StreamTree {
 
     # hide/unhide: a reversible per-node filter. hide removes the row in place
     # (same mechanism as detach) and marks it hidden; unhide clears the flag and
-    # redraws it, open subtree and all, when its row is due (drawable).
+    # redraws it, open subtree and all, when its row is due.
     # Re-ordering a shown row into sorted position is a rebuild, not an unhide.
     method hide {id} {
         my node_set $id hidden 1
@@ -1489,12 +1476,6 @@ oo::class create ::streamtree::StreamTree {
         if {![my drawable $id]} return
         set st [$Text cget -state]
         $Text configure -state normal
-        # The redraw lands at the parent's append point, last among the drawn
-        # siblings; the store follows the view (reattach_last) so the node is
-        # last there too, for the debounced resort to seat - the same late-draw
-        # contract expand lives under. Left first in the store while drawn last,
-        # the row would be spliced out of store order and jump on the next
-        # rebuild under an order-keeping sort.
         my reattach_last $id
         my render_subtree $id
         $Text configure -state $st
@@ -1539,8 +1520,8 @@ oo::class create ::streamtree::StreamTree {
 
     # rebuild: re-render the whole list from the durable store, preserving the
     # reader's view. The store survives (it is the model), so this re-sorts the
-    # sibling order in place (rank_siblings over the kind_rank and sort_siblings
-    # hooks, keeping every node), then wipes the buffer and re-lays every node
+    # sibling order in place (by kind rank, then each kind's run under the active
+    # sort, keeping every node), then wipes the buffer and re-lays every node
     # whose row is due, root to leaf. A node the render_skip hook rejects stays
     # in the store but leaves the view, its subtree with it. Store order tracks
     # display order, so a sort reorders Roots and each node's children, not
@@ -1591,9 +1572,6 @@ oo::class create ::streamtree::StreamTree {
         return [expr {$p eq "" || ([my node_field $p rendered] && [my node_field $p expanded])}]
     }
     # Whether a node's row is due now: placed, and not left out by render_skip.
-    # Every path that draws a node with its content in place (expand, unhide,
-    # rebuild) asks this first, so a node kept out stays out whichever of them
-    # reaches it, and expand draws a node the skip kept out once it is due.
     method drawable {id} {
         return [expr {[my placed $id] && ![my render_skip $id]}]
     }
@@ -1613,8 +1591,7 @@ oo::class create ::streamtree::StreamTree {
     method all_node_ids {} { return [dict keys $Nodes] }
     # A sibling set in display order: the nodes of one kind kept together, the
     # kinds in kind_rank order (ties keep first-seen order), each kind's run in
-    # the order sort_siblings gives it. A set of one kind, the common case,
-    # goes to sort_siblings whole, so the hook only ever sees one kind.
+    # the order sort_siblings gives it, so that hook only ever sees one kind.
     method rank_siblings {ids} {
         if {[llength $ids] < 2} { return $ids }
         set runs [dict create]
