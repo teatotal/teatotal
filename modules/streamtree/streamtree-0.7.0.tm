@@ -78,6 +78,9 @@ namespace eval ::streamtree {}
 #     render_skip id             leave a node out of the view while keeping it in the store,
 #                                asked wherever a node is drawn with its content in place
 #     rebuild_restore anchor     re-pin the view to a {kind key} top node after a rebuild
+#     arrival_in_order key dir   whether a node streamed in, last among its siblings, is
+#                                already where sort key/dir puts it, so schedule_resort
+#                                has nothing to do (the default says no)
 #   Aggregation
 #     aggregate_seed             the value a subtree fold starts from
 #     aggregate_add acc id       that value with one node added into it; node_aggregate
@@ -905,25 +908,26 @@ oo::class create ::streamtree::StreamTree {
         return [lmap e [lsort $mode -index 1 $dir $keyed] { lindex $e 0 }]
     }
 
-    method is_default_sort {} {
-        return [expr {$SortKey eq "date" && $SortDir eq "desc"}]
-    }
+    # Whether a node streamed in now, last among its siblings, already sits
+    # where the active sort puts it, so the arrival needs no resort. Which of
+    # a host's columns, if any, runs in arrival order is the host's to say:
+    # the default says none, and every arrival schedules the resort.
+    method arrival_in_order {key dir} { return 0 }
 
-    # A row streamed, or one whose sort value changed, lands out of order
-    # under a non-default sort.
-    # Debounce a single full re-render to restore the sort: each arrival resets
-    # the timer, so a metric flood resolves to one rebuild when arrivals pause,
-    # and the list stays still (in arrival order) while they stream. The default
-    # sort needs none (streaming order is already correct), so this no-ops then.
+    # A row streamed in lands last among its siblings, out of order under
+    # every sort but one the arrival_in_order hook vouches for. Debounce a
+    # single full re-render to restore the sort: each arrival resets the
+    # timer, so a flood resolves to one rebuild when arrivals pause, and the
+    # list stays still (in arrival order) while they stream.
     method schedule_resort {} {
-        if {[my is_default_sort]} return
+        if {[my arrival_in_order $SortKey $SortDir]} return
         if {$ResortTimer ne ""} { my forget $ResortTimer }
         set ResortTimer [my later [my opt resortdelay] \
             [list [self] do_resort]]
     }
     method do_resort {} {
         set ResortTimer ""
-        if {[my is_default_sort]} return
+        if {[my arrival_in_order $SortKey $SortDir]} return
         my rebuild
     }
     # Drop a pending debounced resort. Called before a synchronous rebuild

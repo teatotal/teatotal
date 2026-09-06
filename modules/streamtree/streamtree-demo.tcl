@@ -8,7 +8,10 @@
 #
 # Try: click a column heading to sort (click again to flip); drag a column
 # boundary (the cursor turns to a resize arrow) to widen a column; click a
-# folder heading to fold it.
+# folder heading to fold it. Turn on "Stream rows": under any sort the
+# debounced resort seats each arrival; under Lines ascending (click Lines
+# twice) each arrival is longer than the last and lands in place, and no
+# resort runs.
 
 package require Tcl 9
 package require Tk
@@ -52,6 +55,9 @@ oo::class create DemoList {
     method row_tags {kind} { return [expr {$kind eq "folder" ? "folderhead" : "filerow"}] }
     method start_gravity {kind} { return right }
     method kind_rank {kind} { return [expr {$kind eq "folder" ? 0 : 1}] }
+    # Every arrival is longer than the last (stream_one), so under Lines
+    # ascending it lands where the sort puts it and no resort is needed.
+    method arrival_in_order {key dir} { return [expr {$key eq "lines" && $dir eq "asc"}] }
 
     method render_subject {node max} {
         if {[my node_field $node kind] eq "folder"} {
@@ -138,7 +144,9 @@ oo::class create DemoList {
     # One streamed arrival: a synthetic file lands in a random folder, bracketed
     # by the anchors so the reader's line never moves, then the debounced resort
     # seats it under the active sort. This is the widget's core contract on
-    # display: leave streaming on, scroll anywhere, and read undisturbed.
+    # display: leave streaming on, scroll anywhere, and read undisturbed. Its
+    # line count grows past every seeded file's, the order arrival_in_order
+    # vouches for.
     variable StreamN
     method stream_one {} {
         if {![info exists StreamN]} { set StreamN 0 }
@@ -148,7 +156,7 @@ oo::class create DemoList {
         my anchor_save
         my insert [dict get $FolderId $folder] file "$folder/$name" \
             [dict create label $name size [expr {1 + int(rand()*99)}] \
-                 lines [expr {10 + int(rand()*2000)}]]
+                 lines [expr {2500 + 10 * $StreamN}]]
         my item [dict get $FolderId $folder]
         my anchor_restore
         my schedule_resort
