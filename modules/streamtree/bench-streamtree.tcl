@@ -17,7 +17,7 @@
 #                   insert + scroll-re-pin cost, not row rasterisation; the
 #                   assertion is that the reader's top line held.
 #   S4 rebuild      one full rebuild at 10k treed (the debounced resort's cost)
-#   S5 fold         a 3k-row tree 160 folders deep under 10 roots: node_aggregate
+#   S5 fold         a 3k-row tree, 160 folders three deep under 10 roots: node_aggregate
 #                   over each root once, then over every folder in turn (what a
 #                   redraw of every heading asks), default counting hooks
 #   S6 treeview     bulk and streaming-shaped inserts into ttk::treeview. Its
