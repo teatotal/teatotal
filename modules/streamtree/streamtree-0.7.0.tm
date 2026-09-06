@@ -206,7 +206,7 @@ oo::class create ::streamtree::StreamTree {
     variable ColHandles       ;# the visible vertical resize-handle rules over the header
     variable Opts             ;# widget options decoupling the base class from any host app
     variable SubjectMax       ;# px the subject may fill before the metadata block
-    variable FolderLabelMax   ;# px a root label may fill before its aggregates
+    variable FolderLabelMax   ;# px a root label may fill before the first tab stop
     variable LayoutW          ;# Text width the current layout was computed for
     variable RelayoutPending  ;# 1 while a debounced relayout is queued
     variable BatchDepth       ;# how many batch brackets are open, 0 outside any
@@ -312,7 +312,8 @@ oo::class create ::streamtree::StreamTree {
     # escape their folder. Gated on the STREAMTREE_AUDIT env var so production
     # pays nothing; when on, it logs the first violation with the call chain
     # and latches off, naming the primitive that broke the contract. Every
-    # primitive calls this at its tail.
+    # primitive calls this at its tail, and each call walks the whole store:
+    # the drawn regions, and under every undrawn node its descendants.
     method check_invariant {where} {
         if {![info exists ::env(STREAMTREE_AUDIT)]} return
         if {[info exists ::STREAMTREE_AUDIT_TRIPPED]} return
@@ -1171,7 +1172,7 @@ oo::class create ::streamtree::StreamTree {
     # nested row to its parent's append point). row_tags are the static style
     # tags every row of a kind carries. on_row_rendered runs after a row is laid
     # (bindings, nested content, selection). on_before_delete runs before a node
-    # leaves the store (drop domain indices and aggregates). populate runs at the
+    # leaves the store (drop domain indices). populate runs at the
     # top of expand, so a lazy host can enumerate and attach the node's children
     # right before the base class draws them; a fully materialized tree leaves it
     # as the no-op default.
@@ -1326,14 +1327,25 @@ oo::class create ::streamtree::StreamTree {
         set st [$Text cget -state]
         $Text configure -state normal
         set id [my node_new $kind $parent $key $payload]
-        if {$parent eq ""} { set kids $Roots } else { set kids [my node_field $parent children] }
-        set i [expr {$before eq "" ? -1 : [lsearch -exact $kids $before]}]
-        if {$i < 0} { set i [llength $kids] }
-        set kids [linsert $kids $i $id]
-        if {$parent eq ""} { set Roots $kids } else { my node_set $parent children $kids }
+        # at: the drawn sibling the row goes before, or "" for the append
+        # point. The append leaves Roots unshared, so a bulk load of roots
+        # stays linear; the seated insert copies the siblings it searches.
         set at ""
-        foreach s [lrange $kids [expr {$i + 1}] end] {
-            if {[my node_field $s rendered]} { set at $s; break }
+        if {$before eq ""} {
+            if {$parent eq ""} {
+                lappend Roots $id
+            } else {
+                my node_set $parent children [list {*}[my node_field $parent children] $id]
+            }
+        } else {
+            if {$parent eq ""} { set kids $Roots } else { set kids [my node_field $parent children] }
+            set i [lsearch -exact $kids $before]
+            if {$i < 0} { set i [llength $kids] }
+            set kids [linsert $kids $i $id]
+            if {$parent eq ""} { set Roots $kids } else { my node_set $parent children $kids }
+            foreach s [lrange $kids [expr {$i + 1}] end] {
+                if {[my node_field $s rendered]} { set at $s; break }
+            }
         }
         # Let the subclass register its domain indices for this node before the
         # row renders: render_subject may read the node back through an index
@@ -1527,13 +1539,17 @@ oo::class create ::streamtree::StreamTree {
     # root. A move can re-key the node and folder regions are disjoint down
     # the buffer, so an in-place splice is not honest: the node's rows leave
     # the view with the reparenting, and the rebuild draws them in their place.
-    # Inside a batch the rebuild waits for the batch's end, one for every move
-    # in it; outside, it runs now.
+    # Inside a batch the rebuild waits for the batch's end and runs once for
+    # all the moves in it; outside, it runs now.
     method move {id newparent args} {
         my detach $id
         my detach_child $id
         my node_set $id parent $newparent
-        my reattach_last $id
+        if {$newparent eq ""} {
+            lappend Roots $id
+        } else {
+            my node_set $newparent children [list {*}[my node_field $newparent children] $id]
+        }
         if {$BatchDepth > 0} { set RebuildPending 1 } else { my rebuild }
         my check_invariant move
     }
