@@ -118,6 +118,8 @@ Measured July 2026 (medians of 3, min-max in parentheses) on an AMD Ryzen 7 5800
 | streaming | 10k + 1,000 | 1,914 inserts/s | p95 780 µs | idle flush per insert; reader's line held |
 | full rebuild | 10,000 | 1,210 ms (1,194-1,286) | 121 µs | the debounced resort's cost |
 | memory, marginal row | 10k→50k | | 4.36 kB/row | includes the retained payload dict, per-row tag, two marks |
+| subtree fold | 3,160 | 2 ms (2-2) | 0.7 µs | September 2026 on an Intel Core Ultra 7 258V; 160 folders three deep under 10 roots, default counting hooks, each root folded once |
+| every heading folded | 160 folds | 5 ms (5-5) | | the same tree, each folder folded over its own subtree, what a redraw of every heading asks |
 
 For calibration, ttk::treeview on the same machine bulk-loads 10k display-text-only rows in 28 ms (2.8 µs/row, a native C widget's floor) and holds 0.53 kB/row. It streams 1,846 inserts/s into a 10k flat list, but its scroll shifts on every insert; that repaint is baked into its number, where streamtree's number pays for the anchor work that prevents the shift. The workloads differ in what a row retains: streamtree keeps the payload dict, which doubles as the host's data model.
 

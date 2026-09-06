@@ -17,7 +17,10 @@
 #                   insert + scroll-re-pin cost, not row rasterisation; the
 #                   assertion is that the reader's top line held.
 #   S4 rebuild      one full rebuild at 10k treed (the debounced resort's cost)
-#   S5 treeview     bulk and streaming-shaped inserts into ttk::treeview. Its
+#   S5 fold         a 3k-row tree 160 folders deep under 10 roots: node_aggregate
+#                   over each root once, then over every folder in turn (what a
+#                   redraw of every heading asks), default counting hooks
+#   S6 treeview     bulk and streaming-shaped inserts into ttk::treeview. Its
 #                   streaming number includes the repaint its shifting scroll
 #                   causes; streamtree's includes the anchor work that prevents
 #                   the shift. Honest per-arrival costs of each widget while a
@@ -175,6 +178,35 @@ proc rebuild10k {} {
     return $us
 }
 
+# The fold's tree is nested, not build_treed's two levels, so a heading's fold
+# and a root's differ: 10 roots x 3 x 4 folders, 25 rows in each leaf folder.
+# Nothing is expanded; the fold reads the store, and drawing would only add
+# time that is not the fold's. Returns {roots_us headings_us}.
+proc fold3k {} {
+    set d [fresh]
+    for {set i 0} {$i < 10} {incr i} {
+        set r [$d insert "" folder r$i [dict create label "folder $i"]]
+        for {set j 0} {$j < 3} {incr j} {
+            set m [$d insert $r folder r$i/$j [dict create label "folder $i/$j"]]
+            for {set k 0} {$k < 4} {incr k} {
+                set l [$d insert $m folder r$i/$j/$k [dict create label "folder $i/$j/$k"]]
+                for {set c 0} {$c < 25} {incr c} {
+                    $d insert $l row r$i/$j/$k/$c [dict create label "row $c"]
+                }
+            }
+        }
+    }
+    set folders [lmap id [$d all_node_ids] { expr {[$d node_field $id kind] eq "folder" ? $id : [continue]} }]
+    set t0 [clock microseconds]
+    foreach r [$d roots] { $d node_aggregate $r }
+    set roots [expr {[clock microseconds] - $t0}]
+    set t0 [clock microseconds]
+    foreach f $folders { $d node_aggregate $f }
+    set heads [expr {[clock microseconds] - $t0}]
+    teardown $d
+    return [list $roots $heads]
+}
+
 proc tv_fresh {} {
     catch {destroy .tv}
     ttk::treeview .tv
@@ -265,6 +297,14 @@ puts "| ttk::treeview streaming | 10k + 1000 | $tvrate inserts/s | p95 [usrow [m
 
 set v [list [rebuild10k] [rebuild10k] [rebuild10k]]
 puts "| streamtree full rebuild | 10k | [spread_ms $v] | [usrow [median3 $v] 10000] µs | the debounced resort's cost |"
+
+set roots [list]; set heads [list]
+foreach - {1 2 3} {
+    lassign [fold3k] r h
+    lappend roots $r; lappend heads $h
+}
+puts "| streamtree subtree fold | 3160 | [spread_ms $roots] | [usrow [median3 $roots] 3160] µs | 160 folders three deep under 10 roots, default counting hooks, each root folded once |"
+puts "| streamtree every heading folded | 160 folds | [spread_ms $heads] | | each folder folded over its own subtree: a redraw of every heading |"
 
 set memo [dict create]
 foreach kind {streamtree treeview} {
