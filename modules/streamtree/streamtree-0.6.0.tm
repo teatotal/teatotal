@@ -1,7 +1,7 @@
 package require Tcl 9
 package require Tk
 package require leash
-package provide streamtree 0.5.2
+package provide streamtree 0.6.0
 
 namespace eval ::streamtree {}
 
@@ -78,6 +78,10 @@ namespace eval ::streamtree {}
 #     render_skip id             leave a node out of the view while keeping it in the store,
 #                                asked wherever a node is drawn with its content in place
 #     rebuild_restore anchor     re-pin the view to a {kind key} top node after a rebuild
+#   Aggregation
+#     aggregate_seed             the value a subtree fold starts from
+#     aggregate_add acc id       that value with one node added into it; node_aggregate
+#                                folds it over a node and everything under it
 #   Attributes
 #     attr_value node id         the value of a declared attribute on a node, read
 #                                through this one hook so the payload stays opaque;
@@ -270,6 +274,33 @@ oo::class create ::streamtree::StreamTree {
         foreach c [my node_field $id children] { lappend out $c {*}[my descendants $c] }
         return $out
     }
+
+    # ---- subtree aggregation -----------------------------------------
+    #
+    # What a node adds up to: aggregate_add folded over the node and every
+    # node under it, parents before children, from aggregate_seed. The host
+    # supplies both (a heading's count, bytes and money summed from the
+    # payloads beneath it); the base class supplies the walk, and only the
+    # walk: nothing is cached, so a move, a delete, a hide or a rewritten
+    # payload is in the next answer with no ledger to fall behind. With shown
+    # set, a hidden node is left out with its whole subtree, as hide takes it
+    # out of the view, so one fold answers both "everything under here" and
+    # "what the view shows of it". Open or shut makes no difference: the fold
+    # reads the store, not the buffer.
+    method node_aggregate {id {shown 0}} {
+        return [my fold_subtree [my aggregate_seed] $id $shown]
+    }
+    method fold_subtree {acc id shown} {
+        set node [dict get $Nodes $id]
+        if {$shown && [dict get $node hidden]} { return $acc }
+        set acc [my aggregate_add $acc $id]
+        foreach c [dict get $node children] { set acc [my fold_subtree $acc $c $shown] }
+        return $acc
+    }
+    # The hooks: the value the fold starts from, and one node taken into it.
+    # The defaults count nodes, so a plain tree's fold is its subtree's size.
+    method aggregate_seed {} { return 0 }
+    method aggregate_add {acc id} { return [expr {$acc + 1}] }
 
     # ---- structural invariant ----------------------------------------
     #
