@@ -141,7 +141,7 @@ check "skips and hides, invariant clean" 0 [tripped]
 # --- A skip that content decides cannot be answered at insert: a folder is
 #     born empty, so a skip reading "nothing under it" says no. insert draws
 #     the folder on its place alone; the next rebuild asks the skip and drops
-#     it; and expand is the door back once a child has landed, no rebuild
+#     it; and expand is the way back once a child has landed, no rebuild
 #     needed.
 set late [$d insert "" folder late [dict create label "born empty"]]
 check "insert draws a folder its skip cannot yet judge" 1 [$d node_field $late rendered]

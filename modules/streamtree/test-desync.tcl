@@ -1,24 +1,23 @@
 #!/usr/bin/env wish9.0
-# The three desyncs 0.5.2 settled, each guarded here so a consuming project's
-# suite is not the only thing that catches a regression.
+# Three contracts between the store, the buffer and the audit gate, each of
+# which a host can break from outside the primitives.
 #
-#   unhide       drew a shown row at the folder's append point (the tail) but
-#                left the node where it sat in the store. Under a store-order
-#                sort the next rebuild would jump it back. unhide now
-#                reattach_last, so the store follows the view, as expand does
-#                for a late-drawn node.
-#   the gate     judged siblings in STORE order, so a host that draws a sibling
-#                set in a sorted order over an arrival-order store (seated only
-#                at the next rebuild) tripped it, though every region was
-#                well-formed, disjoint and nested. The gate now judges
-#                disjointness in BUFFER order; a store order out of step with
-#                the buffer is the rebuild's to settle, not a mark desync. The
-#                disjointness check itself stays: a genuine overlap still trips.
-#   render_row   dropped its insert silently when a host reached it with the
-#                widget -state disabled (a flush that skipped its batch), drawing
-#                a zero-length row whose right-gravity start split from its
+#   unhide       draws the shown row at its parent's append point (the tail)
+#                and reattaches the node last in the store, so the store
+#                follows the view, as expand does for a late-drawn node. Left
+#                where it sat, a store-order sort would jump the row back at
+#                the next rebuild.
+#   the gate     judges sibling disjointness in BUFFER order, not store order.
+#                A host may draw a sibling set in a sorted order over an
+#                arrival-order store, seated only at the next rebuild; that is
+#                the rebuild's to settle, not a mark desync, and every region
+#                stays well-formed, disjoint and nested. A genuine overlap
+#                still trips.
+#   render_row   draws editable and restores, as the primitives do. Reached
+#                with the widget -state disabled (a host helper outside a
+#                batch), an unguarded insert would be silently dropped, leaving
+#                a zero-length row whose right-gravity start splits from its
 #                left-gravity end on the next insert there - end before start.
-#                render_row now draws editable and restores, as the primitives do.
 
 package require Tcl 9
 package require Tk
@@ -77,9 +76,9 @@ check "and the rebuild seats the store's order in the buffer" {z x y} \
 check "the rebuild is invariant-clean" 0 [tripped]
 
 # --- render_row draws editable even when a host reaches it disabled -----------
-# A host helper (a search flush past its batch bracket) reaches render_row with
-# the widget disabled. The insert must land: a zero-length row would invert on
-# the next sibling insert.
+# A host helper outside any batch bracket reaches render_row with the widget
+# disabled. The insert must land: a zero-length row would invert on the next
+# sibling insert.
 set h [$d insert "" folder h {label H}]
 $d expand $h
 set s1 [$d node_new row $h s1 {label one}]

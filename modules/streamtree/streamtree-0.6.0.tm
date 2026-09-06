@@ -268,7 +268,7 @@ oo::class create ::streamtree::StreamTree {
         return $out
     }
     # Every node under a node, parents before children, siblings in store
-    # order: the order their rows take in the view, to any depth.
+    # order: the order rebuild lays their rows in, to any depth.
     method descendants {id} {
         set out [list]
         foreach c [my node_field $id children] { lappend out $c {*}[my descendants $c] }
@@ -279,14 +279,15 @@ oo::class create ::streamtree::StreamTree {
     #
     # What a node adds up to: aggregate_add folded over the node and every
     # node under it, parents before children, from aggregate_seed. The host
-    # supplies both (a heading's count, bytes and money summed from the
-    # payloads beneath it); the base class supplies the walk, and only the
+    # supplies both (a count of the leaves, a size summed from the payloads
+    # beneath a container); the base class supplies the walk, and only the
     # walk: nothing is cached, so a move, a delete, a hide or a rewritten
     # payload is in the next answer with no ledger to fall behind. With shown
-    # set, a hidden node is left out with its whole subtree, as hide takes it
-    # out of the view, so one fold answers both "everything under here" and
-    # "what the view shows of it". Open or shut makes no difference: the fold
-    # reads the store, not the buffer.
+    # set, a hidden node is left out with its whole subtree: the hidden flag
+    # is the one filter the store carries, so one fold answers both
+    # "everything under here" and "what survives the hides". Open or shut and
+    # render_skip are draw-time decisions the fold does not consult: it reads
+    # the store, not the buffer.
     method node_aggregate {id {shown 0}} {
         return [my fold_subtree [my aggregate_seed] $id $shown]
     }
@@ -647,8 +648,8 @@ oo::class create ::streamtree::StreamTree {
             # Subject runs up to just before the leftmost metadata column.
             set first_rx [lindex $rights 0]
             set SubjectMax [expr {$first_rx - [lindex $ColW 0] - $ColGap - 12}]
-            # A root label has no date cell, so it may run up to the first tab
-            # stop before its aggregates; cap it just short of that.
+            # A root label lays no cell of its own before the first tab stop,
+            # so it may run up to it; cap it just short of that.
             set FolderLabelMax [expr {$first_rx - 16}]
         }
         if {$SubjectMax < 80} { set SubjectMax 80 }
@@ -884,10 +885,9 @@ oo::class create ::streamtree::StreamTree {
 
     # ---- sort ordering ------------------------------------------------
 
-    # Order a list of domain keys by the active sort. Each value reads a cached
-    # payload field through the sort_key hook; date descending reproduces the
-    # mtime-descending streaming order. src maps a key to its payload (the live
-    # model on expand, the pre-rebuild snapshot in redraw_all).
+    # Order a list of domain keys by the active sort. Each value reads a
+    # payload field through the sort_key hook; src maps a key to its payload.
+    # A subclass helper: the base class's own ordering is rank_siblings.
     method sort_paths {paths src} {
         set keyed [list]
         foreach p $paths {
@@ -901,8 +901,9 @@ oo::class create ::streamtree::StreamTree {
         return [lmap e [lsort -real -index 1 $dir $keyed] { lindex $e 0 }]
     }
 
-    # Order folder keys by a folder->value map. mode picks the lsort comparator:
-    # -real for the numeric cost aggregate, -dictionary for the string path label.
+    # Order keys by a key->value map. mode picks the lsort comparator: -real
+    # for a numeric value, -dictionary for a string label. A subclass helper,
+    # as sort_paths is.
     method sort_folders {order valmap {mode -real}} {
         set dflt [expr {$mode eq "-real" ? 0.0 : ""}]
         set keyed [lmap f $order { list $f [dict getdef $valmap $f $dflt] }]
@@ -914,7 +915,8 @@ oo::class create ::streamtree::StreamTree {
         return [expr {$SortKey eq "date" && $SortDir eq "desc"}]
     }
 
-    # A row streamed or recosted under a non-default sort lands out of order.
+    # A row streamed, or one whose sort value changed, lands out of order
+    # under a non-default sort.
     # Debounce a single full re-render to restore the sort: each arrival resets
     # the timer, so a metric flood resolves to one rebuild when arrivals pause,
     # and the list stays still (in arrival order) while they stream. The default
@@ -930,7 +932,7 @@ oo::class create ::streamtree::StreamTree {
         if {[my is_default_sort]} return
         my rebuild
     }
-    # Drop a pending debounced resort. Called before a synchronous redraw_all
+    # Drop a pending debounced resort. Called before a synchronous rebuild
     # (a header click), so a stale timer cannot fire a second redundant rebuild
     # just after the user starts interacting with the freshly-sorted list.
     method cancel_resort {} {
@@ -967,10 +969,10 @@ oo::class create ::streamtree::StreamTree {
     }
 
     # The rendered node whose row sits at the top of the viewport, as {kind key},
-    # or "" when the list is empty. redraw_all re-anchors the view by this rather
+    # or "" when the list is empty. rebuild re-anchors the view by this rather
     # than by the AnchorTop mark, which cannot survive its `$Text delete 1.0 end`.
-    # Scans node start marks (not tags) so a snippet or child-snippet line, which
-    # owns no node, resolves to its containing node: the answer is the rendered
+    # Scans node start marks (not tags) so a line of loose content, which owns
+    # no node, resolves to its containing node: the answer is the rendered
     # node with the greatest start line <= the top visible line.
     method top_visible_node {} {
         set topline [lindex [split [$Text index @0,0] .] 0]
@@ -1158,8 +1160,8 @@ oo::class create ::streamtree::StreamTree {
         return -options $opts $res
     }
 
-    # The lifecycle hooks. Defaults suit a plain list; the session subclass
-    # overrides them. start_gravity fixes a row's start mark (right keeps a
+    # The lifecycle hooks. Defaults suit a plain list; a subclass overrides
+    # them. start_gravity fixes a row's start mark (right keeps a
     # heading pinned to its own line when a sibling above expands; left pins a
     # nested row to its parent's append point). row_tags are the static style
     # tags every row of a kind carries. on_row_rendered runs after a row is laid
@@ -1200,20 +1202,20 @@ oo::class create ::streamtree::StreamTree {
     # this and nothing else.
     method attr_value {node id} { return [my node_pget $node $id] }
 
-    # Lay a node's row at its parent's append point and register its marks. The
-    # one home for the right-gravity-temp-mark insert and the ancestor-end
-    # advance that the per-kind render methods each used to repeat: a left-gravity
-    # end mark stays left of an insert, so every ancestor whose end currently
-    # sits at the append point must be carried forward past the new row (an
-    # ancestor's end follows only its own last descendant down; a node in the
-    # middle relies on the insert shifting the lower end mark on its own). Both
-    # insert and expand/unhide route through here.
+    # Lay a node's row at its parent's append point and register its marks: the
+    # one home for the right-gravity temp-mark insert and the ancestor-end
+    # advance. A left-gravity end mark stays left of an insert, so every
+    # ancestor whose end currently sits at the append point must be carried
+    # forward past the new row (an ancestor's end follows only its own last
+    # descendant down; a node in the middle relies on the insert shifting the
+    # lower end mark on its own). Both insert and expand/unhide route through
+    # here.
     method render_row {id} {
         # Draw editable and restore, as the primitives do. render_row is the one
         # method that inserts a row's text; every primitive that reaches it has
         # already made the widget editable, but a subclass helper (a host's own
-        # render_session, say) reaches it directly and can be one insert past a
-        # bracket that left the widget disabled. An insert against a disabled
+        # per-kind draw method, say) reaches it directly and can be one insert
+        # past a bracket that left the widget disabled. An insert against a disabled
         # widget is silently dropped: the row draws no line, start and end land
         # on the same empty point, and the right-gravity start splits from the
         # left-gravity end on the next insert there - end before start. Self-
@@ -1336,7 +1338,7 @@ oo::class create ::streamtree::StreamTree {
         }
         # Let the subclass register its domain indices for this node before the
         # row renders: render_subject may read the node back through an index
-        # (a folder heading counts its sessions through the folder->id map), so
+        # (a container's row counting its children through a key->id map), so
         # the index must exist by the time render_row builds the line.
         my on_node_created $id
         if {[my placed $id]} { my render_row $id }
@@ -1435,7 +1437,7 @@ oo::class create ::streamtree::StreamTree {
     # expand: open a node and draw what is due under it, each child with its
     # own open subtree. populate runs first, so a lazy host realizes the
     # children this expand is about to draw. A node with no row of its own
-    # draws it here when it is due, its subtree with it: the door back for a
+    # draws it here when it is due, its subtree with it: the way back for a
     # node render_skip kept out while it was empty. One whose parent is shut
     # records the flag alone, and draws when the parent's row does, or on the
     # next rebuild. That makes opening one level everywhere a one-liner over
