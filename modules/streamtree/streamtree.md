@@ -33,7 +33,8 @@ streamtree renders a tree of abstract nodes into a single `text` widget: nodes n
 | `item id` | `item id -values ...` | rewrites the node's own row in place |
 | `expand id` / `collapse id` | `item id -open true/false` | draws / removes the body; `expand` also draws the node's own row when it has none and is due |
 | `hide id` / `unhide id` | `detach` + `move` | a reversible per-node filter (treeview has no first-class hide) |
-| `move id newparent` | `move id newparent end` | reparents, then rebuilds |
+| `move id newparent` | `move id newparent end` | reparents (`""` makes it a root), then rebuilds; inside `batch` the rebuild waits for the batch's end, so several moves pay one |
+| `batch script` | (none) | runs the script with the widget editable and the reader's view anchored once; a `move` inside it defers its rebuild to the batch's end |
 | `column id -width N -minwidth M` | `column id -width N -minwidth M` | per-column width override and clamp |
 | `rebuild` | (none) | re-render the whole tree from the durable store under the active sort |
 | `reset` | `delete [children {}]` | empty the whole widget |

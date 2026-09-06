@@ -1,7 +1,7 @@
 package require Tcl 9
 package require Tk
 package require leash
-package provide streamtree 0.6.0
+package provide streamtree 0.7.0
 
 namespace eval ::streamtree {}
 
@@ -206,6 +206,8 @@ oo::class create ::streamtree::StreamTree {
     variable FolderLabelMax   ;# px a root label may fill before its aggregates
     variable LayoutW          ;# Text width the current layout was computed for
     variable RelayoutPending  ;# 1 while a debounced relayout is queued
+    variable BatchDepth       ;# how many batch brackets are open, 0 outside any
+    variable RebuildPending   ;# 1 while an open batch holds a move's rebuild for its end
     variable SortKey          ;# active sort column id
     variable SortDir          ;# desc | asc
     variable ResortTimer      ;# leash token of the debounced resort, or "" when none is pending
@@ -523,6 +525,8 @@ oo::class create ::streamtree::StreamTree {
 
         $Text mark set TailMark "end-1c"
         $Text mark gravity TailMark right
+        set BatchDepth 0
+        set RebuildPending 0
     }
 
     # Text widget yview update: forward to the scrollbar, and edge-detect the
@@ -1138,14 +1142,22 @@ oo::class create ::streamtree::StreamTree {
 
     # Run a script with the widget editable and the view anchored once, restoring
     # the prior state after. A streaming flush brackets many inserts in one batch
-    # so the reader's scroll position is saved and restored a single time.
+    # so the reader's scroll position is saved and restored a single time. A
+    # rebuild a move asks for inside the batch waits for the outermost batch's
+    # end, so reparenting several nodes pays one. It runs once the anchors are
+    # restored, since a rebuild keeps the reader's view by its own means, and
+    # whether or not the script failed: the store has moved either way, and
+    # the view follows the store.
     method batch {script} {
         set st [$Text cget -state]
         $Text configure -state normal
         my anchor_save
+        incr BatchDepth
         set code [catch {uplevel 1 $script} res opts]
+        incr BatchDepth -1
         my anchor_restore
         $Text configure -state $st
+        if {$BatchDepth == 0 && $RebuildPending} { my rebuild }
         return -options $opts $res
     }
 
@@ -1506,16 +1518,19 @@ oo::class create ::streamtree::StreamTree {
         foreach c [my node_field $id children] { my open_below $c }
     }
 
-    # move: reparent a node, then rebuild. A move can re-key the node and folder
-    # regions are disjoint down the buffer, so an in-place splice is not honest;
-    # a rebuild keeps the mark scheme consistent and moves are rare.
+    # move: reparent a node, then rebuild; "" as the new parent makes it a
+    # root. A move can re-key the node and folder regions are disjoint down
+    # the buffer, so an in-place splice is not honest: the node's rows leave
+    # the view with the reparenting, and the rebuild draws them in their place.
+    # Inside a batch the rebuild waits for the batch's end, one for every move
+    # in it; outside, it runs now.
     method move {id newparent args} {
+        my detach $id
         my detach_child $id
         my node_set $id parent $newparent
-        set kids [my node_field $newparent children]
-        lappend kids $id
-        my node_set $newparent children $kids
-        my rebuild
+        my reattach_last $id
+        if {$BatchDepth > 0} { set RebuildPending 1 } else { my rebuild }
+        my check_invariant move
     }
 
     # rebuild: re-render the whole list from the durable store, preserving the
@@ -1527,6 +1542,7 @@ oo::class create ::streamtree::StreamTree {
     # display order, so a sort reorders Roots and each node's children, not
     # just the painted sequence.
     method rebuild {} {
+        set RebuildPending 0
         set st [$Text cget -state]
         $Text configure -state normal
         set at_top [expr {[lindex [$Text yview] 0] <= 0.0001}]
