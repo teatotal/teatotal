@@ -41,7 +41,8 @@ namespace eval ::streamtree {}
 # The base class owns every text-mark mutation behind a treeview-style primitive
 # ensemble - insert/delete/detach/item/expand/collapse/hide/unhide/move/rebuild,
 # reveal and expand_subtree over a node's ancestors and descendants, the cursor
-# the keyboard walks (treeview's focus row), plus reset and a content door
+# the keyboard walks (treeview's focus row), batch to run many under one
+# anchoring, plus reset and a content door
 # (append_open/emit/emit_window/append_close, and drop_loose to lift a tagged
 # run of it back out) for loose in-row content that is not itself a node. A
 # subclass drives the widget only through these and never touches the text
@@ -59,6 +60,10 @@ namespace eval ::streamtree {}
 #     cell_values node           ordered {col value} pairs laid as cells ({})
 #     cell_tag node col          the tag names overlaid on that cell (empty for none)
 #     sort_key payload col       the sort value for a column, from a node's payload
+#     subject_sort_id            the column id a click on the subject header sorts by
+#                                ("": the subject does not sort)
+#     default_sort_dir id        the direction a freshly adopted sort starts in, asc or
+#                                desc (desc)
 #     apply_column_tabs tabs     set the right tab stops; the default sets them
 #                                widget-wide, a host whose row tags carry their own
 #                                -tabs configures those tags instead
@@ -79,8 +84,9 @@ namespace eval ::streamtree {}
 #                                asked wherever a node is drawn with its content in place
 #     rebuild_restore anchor     re-pin the view to a {kind key} top node after a rebuild
 #     arrival_in_order key dir   whether a node streamed in, last among its siblings, is
-#                                already where sort key/dir puts it, so schedule_resort
-#                                has nothing to do (the default says no)
+#                                already where sort key in direction dir (asc or desc)
+#                                puts it, so schedule_resort has nothing to do (the
+#                                default says no)
 #   Aggregation
 #     aggregate_seed             the value a subtree fold starts from
 #     aggregate_add acc id       that value with one node added into it; node_aggregate
@@ -1172,10 +1178,10 @@ oo::class create ::streamtree::StreamTree {
     # nested row to its parent's append point). row_tags are the static style
     # tags every row of a kind carries. on_row_rendered runs after a row is laid
     # (bindings, nested content, selection). on_before_delete runs before a node
-    # leaves the store (drop domain indices). populate runs at the
-    # top of expand, so a lazy host can enumerate and attach the node's children
-    # right before the base class draws them; a fully materialized tree leaves it
-    # as the no-op default.
+    # leaves the store (drop domain indices). populate runs at the top of
+    # expand, so a lazy host can enumerate and attach the node's children right
+    # before the base class draws them; a fully materialized tree leaves it as
+    # the no-op default.
     method start_gravity {kind} { return right }
     method row_tags {kind} { return [list] }
     method on_node_created {id} {}
