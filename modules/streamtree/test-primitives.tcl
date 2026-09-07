@@ -25,7 +25,7 @@ font create TestHead {*}[font actual TkTextFont] -weight bold
 oo::class create Demo {
     superclass ::streamtree::StreamTree
     variable Top Text Nodes Roots NextId ColTabs ColRightX ColW ColGap \
-        SubjectMax FolderLabelMax LayoutW RelayoutPending SortKey SortDir \
+        SubjectMax LabelMax LayoutW RelayoutPending SortKey SortDir \
         ResortTimer AtTop
     constructor {parent} {
         my configure -listfont TestList -headfont TestHead \

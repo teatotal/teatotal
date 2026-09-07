@@ -30,6 +30,14 @@
 #   S5 fold         a 3k-row tree, 160 folders three deep under 10 roots: node_aggregate
 #                   over each root once, then over every folder in turn (what a
 #                   redraw of every heading asks), default counting hooks
+#   S5b real hooks  the same tree with hooks a heading really has: the fold
+#                   sums three payload fields into a dict, and each heading's
+#                   subject, cell and cell tag read the shown fold. Times the
+#                   fold over each root, then a redraw of every heading
+#                   (item on each folder), which is what a host's flush pays
+#                   per touched heading, and counts the hook calls the pass
+#                   made: one walk per heading, where three hooks asking
+#                   three times would triple it
 #   S6 treeview     bulk and streaming-shaped inserts into ttk::treeview. Its
 #                   streaming number includes the repaint its shifting scroll
 #                   causes; streamtree's includes the anchor work that prevents
@@ -217,6 +225,76 @@ proc fold3k {} {
     return [list $roots $heads]
 }
 
+# The fold3k tree under hooks shaped like a host's: a row carries a size and a
+# cost, the fold sums them with a count, and a heading's subject, cell and
+# cell tag each read the shown fold. Everything is drawn, so a heading redraw
+# is a real item. Returns {roots_us headings_us adds}, adds the aggregate_add
+# calls the heading pass made.
+proc heading_pass {} {
+    catch {destroy .f}
+    pack [ttk::frame .f] -fill both -expand 1
+    set d [::streamtree::StreamTree new]
+    oo::objdefine $d {
+        method column_spec {} { return {{cost Cost {$9999.99} right 1}} }
+        method aggregate_seed {} { return [dict create count 0 size 0 cost 0.0] }
+        method aggregate_add {acc id} {
+            incr ::adds
+            if {[my node_field $id kind] ne "row"} { return $acc }
+            dict incr acc count
+            dict incr acc size [my node_pget $id size 0]
+            dict set acc cost [expr {[dict get $acc cost] + [my node_pget $id cost 0]}]
+            return $acc
+        }
+        method render_subject {node max} {
+            if {[my node_field $node kind] ne "folder"} {
+                return [dict create subject [my node_pget $node label] tags {} meta_run 1]
+            }
+            set n [dict get [my node_aggregate $node 1] count]
+            return [dict create subject "[my node_pget $node label] ($n)" tags {} meta_run 0]
+        }
+        method cell_values {node} {
+            if {[my node_field $node kind] ne "folder"} {
+                return [list [list cost [format {$%.2f} [my node_pget $node cost 0]]]]
+            }
+            return [list [list cost [format {$%.2f} [dict get [my node_aggregate $node 1] cost]]]]
+        }
+        method cell_tag {node col} {
+            if {[my node_field $node kind] ne "folder"} { return meta }
+            return [expr {[dict get [my node_aggregate $node 1] cost] >= 1.0 ? "hot" : "meta"}]
+        }
+    }
+    $d setup .f
+    update
+    $d anchor_save
+    for {set i 0} {$i < 10} {incr i} {
+        set r [$d insert "" folder r$i [dict create label "folder $i"]]
+        $d node_set $r expanded 1
+        for {set j 0} {$j < 3} {incr j} {
+            set m [$d insert $r folder r$i/$j [dict create label "folder $i/$j"]]
+            $d node_set $m expanded 1
+            for {set k 0} {$k < 4} {incr k} {
+                set l [$d insert $m folder r$i/$j/$k [dict create label "folder $i/$j/$k"]]
+                $d node_set $l expanded 1
+                for {set c 0} {$c < 25} {incr c} {
+                    $d insert $l row r$i/$j/$k/$c [dict create label "row $c" size $c cost [expr {$c * 0.01}]]
+                }
+            }
+        }
+    }
+    $d anchor_restore
+    update
+    set folders [lmap id [$d all_node_ids] { expr {[$d node_field $id kind] eq "folder" ? $id : [continue]} }]
+    set t0 [clock microseconds]
+    foreach r [$d roots] { $d node_aggregate $r 1 }
+    set roots [expr {[clock microseconds] - $t0}]
+    set ::adds 0
+    set t0 [clock microseconds]
+    foreach f $folders { $d item $f }
+    set heads [expr {[clock microseconds] - $t0}]
+    teardown $d
+    return [list $roots $heads $::adds]
+}
+
 proc tv_fresh {} {
     catch {destroy .tv}
     ttk::treeview .tv
@@ -315,6 +393,14 @@ foreach - {1 2 3} {
 }
 puts "| streamtree subtree fold | 3160 | [spread_ms $roots] | [usrow [median3 $roots] 3160] µs | 160 folders three deep under 10 roots, default counting hooks, each root folded once |"
 puts "| streamtree every heading folded | 160 folds | [spread_ms $heads] | | each folder folded over its own subtree: a redraw of every heading |"
+
+set roots [list]; set heads [list]
+foreach - {1 2 3} {
+    lassign [heading_pass] r h adds
+    lappend roots $r; lappend heads $h
+}
+puts "| streamtree subtree fold, real hooks | 3160 | [spread_ms $roots] | [usrow [median3 $roots] 3160] µs | the same tree, the fold summing three payload fields into a dict, each root folded once |"
+puts "| streamtree every heading redrawn, real hooks | 160 headings | [spread_ms $heads] | [usrow [median3 $heads] 160] µs | item on each drawn heading, its subject, cell and cell tag reading the shown fold: $adds aggregate_add calls, one walk per heading |"
 
 set memo [dict create]
 foreach kind {streamtree treeview} {

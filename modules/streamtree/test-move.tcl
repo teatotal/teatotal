@@ -122,5 +122,30 @@ $d batch { $d insert $f1 row plain {label plain} }
 check "a batch with no move rebuilds nothing" [expr {$n + 1}] [$d rebuilds]
 check "every move, invariant clean" 0 [tripped]
 
+# --- begin_batch/end_batch: the bracket a host opens in one callback and
+#     closes in another. It nests by depth, holds the widget editable and the
+#     moves' rebuild until the outermost close, and leaves the widget as it
+#     found it.
+$d expand $f2
+set n [$d rebuilds]
+check "no bracket open to begin with" 0 [$d batch_depth]
+$d begin_batch
+check "the widget is editable inside the bracket" normal [$T cget -state]
+$d move $late $f2
+$d batch { $d move $b $f2 }
+check "a script batch inside the pair is an inner bracket" 1 [$d batch_depth]
+check "no rebuild while the outer bracket is open" $n [$d rebuilds]
+$d begin_batch
+$d end_batch
+check "an inner pair closes nothing" 1 [$d batch_depth]
+$d end_batch
+check "the outermost close pays the one rebuild" [expr {$n + 1}] [$d rebuilds]
+check "and restores the widget's state" disabled [$T cget -state]
+check "and closes the bracket" 0 [$d batch_depth]
+check "the moves are drawn under their new parent" {1 1} \
+    [list [$d node_field $late rendered] [$d node_field $b rendered]]
+check "a move takes no trailing index" 1 [catch {$d move $b $f1 end}]
+check "the pair, invariant clean" 0 [tripped]
+
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails

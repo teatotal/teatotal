@@ -22,7 +22,7 @@ font create TestHead {*}[font actual TkTextFont] -weight bold
 oo::class create Demo {
     superclass ::streamtree::StreamTree
     variable Top Text Nodes Roots NextId ColTabs ColRightX ColW ColWMeasured \
-        ColWOverride ColMinW ColGap SubjectMax FolderLabelMax LayoutW \
+        ColWOverride ColMinW ColGap SubjectMax LabelMax LayoutW \
         RelayoutPending SortKey SortDir ResortTimer AtTop ResizeCol ResizeX0 ResizeW0
     constructor {parent} {
         my configure -listfont TestList -headfont TestHead \
@@ -110,6 +110,36 @@ set before [$d sortkey]
 $d on_header_press $bx
 $d on_header_release $bx
 check "a boundary press-release does not sort" [$d sortkey] $before
+
+# ---- 6: a strip too wide for the widget drops columns from the right -------
+# Narrow the widget until the three columns cannot all leave the subject its
+# floor: the leading columns stay laid, the header and every row carry a cell
+# per laid column and no more, and the header maps a click to a laid column
+# only. Widened again, every column is back.
+foreach w {.f.body.t .f.body.hdr} { $w configure -width 32 }
+update idletasks
+$d relayout
+update idletasks
+set laid [lmap c [$d laid_columns] { lindex $c 0 }]
+set n [llength $laid]
+check "a narrow widget lays fewer columns than the spec" [expr {$n > 0 && $n < 3}] 1
+check "the laid columns are the leading run of the spec" $laid [lrange {date size cost} 0 [expr {$n - 1}]]
+$d insert "" row a {label a}
+check "a row carries a cell per laid column, none for a dropped one" \
+    [regexp -all {\t} [.f.body.t get 1.0 {1.0 lineend}]] $n
+check "the header carries a label per laid column" \
+    [regexp -all {\t} [.f.body.hdr get 1.0 end-1c]] $n
+set last [expr {$n - 1}]
+set cx [expr {[lindex [$d rightx] $last] - [lindex [$d colw] $last] / 2 + 8}]
+check "a header x inside a laid column maps to it" [$d column_at $cx] [lindex $laid $last]
+check "a header x past the laid strip maps to nothing" [$d column_at [expr {[lindex [$d rightx] $last] + 40}]] ""
+foreach w {.f.body.t .f.body.hdr} { $w configure -width 120 }
+update idletasks
+$d relayout
+update idletasks
+check "widened again, every column is laid" [llength [$d laid_columns]] 3
+$d insert "" row b {label b}
+check "and a row carries every cell again" [regexp -all {\t} [.f.body.t get 2.0 {2.0 lineend}]] 3
 
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails

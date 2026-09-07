@@ -30,8 +30,8 @@ font create DemoBold {*}[font actual TkTextFont] -weight bold
 oo::class create DemoList {
     superclass ::streamtree::StreamTree
     variable Top Text Nodes Roots NextId ColTabs ColRightX ColW ColWMeasured \
-        ColWOverride ColMinW ColGap SubjectMax FolderLabelMax LayoutW \
-        RelayoutPending SortKey SortDir ResortTimer AtTop Opts \
+        ColWOverride ColMinW ColGap SubjectMax LabelMax LayoutW \
+        RelayoutPending ResortTimer AtTop Opts \
         ResizeCol ResizeX0 ResizeW0 FolderId
     constructor {parent} {
         set FolderId [dict create]
@@ -95,11 +95,11 @@ oo::class create DemoList {
     # folders tie under those sorts and keep their order.
     method sort_siblings {ids} {
         if {[llength $ids] == 0} { return $ids }
-        set keyed [lmap id $ids { list $id [my sort_key [my node_payload $id] $SortKey] }]
-        set num [expr {$SortKey in {size lines}}]
-        set dir [expr {$SortDir eq "asc" ? "-increasing" : "-decreasing"}]
-        set cmp [expr {$num ? "-real" : "-dictionary"}]
-        return [lmap e [lsort $cmp -index 1 $dir $keyed] { lindex $e 0 }]
+        lassign [my sort] key dir
+        set keyed [lmap id $ids { list $id [my sort_key [my node_payload $id] $key] }]
+        set cmp [expr {$key in {size lines} ? "-real" : "-dictionary"}]
+        set order [expr {$dir eq "asc" ? "-increasing" : "-decreasing"}]
+        return [lmap e [lsort $cmp -index 1 $order $keyed] { lindex $e 0 }]
     }
     method on_node_created {id} {
         if {[my node_field $id kind] eq "folder"} {

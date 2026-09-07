@@ -103,5 +103,38 @@ check "the default fold counts the node and everything under it" 4 [$plain node_
 $plain hide $s
 check "shown only, less the hidden subtree" 2 [$plain node_aggregate $r 1]
 
+# --- Within one row build the fold is taken once, however many hooks ask:
+#     a heading whose subject, cells and cell tags each read the fold pays
+#     one walk of its subtree per draw, and the all-nodes fold asked beside it
+#     one more. Outside a build every ask walks, and a mutation between two
+#     builds is in the second's answer.
+set ::adds 0
+oo::objdefine $plain {
+    method column_spec {} { return {{n N 9999 right 0}} }
+    method aggregate_add {acc id} { incr ::adds; next $acc $id }
+    method render_subject {node max} {
+        return [dict create subject "[my node_aggregate $node 1]" tags {} meta_run 0]
+    }
+    method cell_values {node} { return [list [list n [my node_aggregate $node 1]]] }
+    method cell_tag {node col} { my node_aggregate $node 1; my node_aggregate $node; return {} }
+}
+$plain compute_col_widths
+$plain relayout
+$plain unhide $s
+set ::adds 0
+$plain item $r
+check "three hooks asking the shown fold walk the subtree once, the all-nodes fold once more" 8 $::adds
+check "the row shows the fold" "4\t4" [.g.body.t get [$plain node_field $r start] "[$plain node_field $r start] lineend"]
+set ::adds 0
+$plain node_aggregate $r 1
+$plain node_aggregate $r 1
+check "outside a build every ask walks" 8 $::adds
+$plain insert $r row z [dict create label z]
+set ::adds 0
+$plain item $r
+check "a node added between builds is in the next build's fold" "5\t5" \
+    [.g.body.t get [$plain node_field $r start] "[$plain node_field $r start] lineend"]
+check "the once-per-build fold, invariant clean" 0 [tripped]
+
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails
