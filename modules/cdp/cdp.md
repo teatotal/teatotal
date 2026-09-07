@@ -31,7 +31,7 @@ The transport URL is any DevTools websocket endpoint: a page target read off `ht
 
   - `$cdp cdp method ?paramsDict?` - send one CDP command, return the id-matched response dict; interleaved events are skipped.
   - `$cdp navigate url` - `Page.enable` then `Page.navigate`.
-  - `$cdp evaluate jsExpr` - `Runtime.evaluate` with `returnByValue` and `awaitPromise`; returns the JS value, raises on a JS exception.
+  - `$cdp evaluate jsExpr` - `Runtime.evaluate` with `returnByValue` and `awaitPromise`; returns the JS value. A JS exception raises an error carrying the page's own message, the first line of the thrown Error's description or the thrown primitive's value.
   - `$cdp cdpBuffered method ?paramsDict?` - like `cdp`, but events seen while awaiting the response are parked in the event buffer.
   - `$cdp drainEvents seconds` - park every event the browser sends for the given time; use with `Network.enable` to observe the page's own network traffic.
   - `$cdp events` / `$cdp clearEvents` - read / empty the parked events (each a dict).

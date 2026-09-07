@@ -2,7 +2,9 @@
 # Tests for the cdp module, offline: RFC6455 client-frame masking must round-trip
 # a multibyte payload (mask with the module's own framing, unmask here mirroring
 # a server), across all three payload-length encodings (7-bit, 16-bit, 64-bit);
-# connect must fail loudly on a non-ws URL and on an unset CDP_WS_URL. No socket
+# a raised JS exception must carry the page's own message rather than CDP's
+# "Uncaught" envelope; connect must fail loudly on a non-ws URL and on an unset
+# CDP_WS_URL. No socket
 # and no browser: the wire behaviour against a live DevTools endpoint is the
 # demo's job, not this test's.
 package require Tcl 9
@@ -64,6 +66,22 @@ check "16-bit-length frame round-trips" $medium \
 set large [string repeat "payload-64bit-length " 4000]
 check "64-bit-length frame round-trips" $large \
     [unmask_client_frame [$probe FrameMasked $large]]
+
+# A raised JS exception carries the page's own message, not CDP's bare
+# "Uncaught" envelope: an Error reports its description, a thrown primitive its
+# value, and a stack-carrying description is cut to its first line.
+oo::objdefine $probe { export ExcMessage }
+check "Error exception reports its description" "JS exception: TypeError: x is not a function" \
+    [$probe ExcMessage [dict create text Uncaught \
+        exception [dict create className TypeError \
+            description "TypeError: x is not a function\n    at <anonymous>:1:1"]]]
+check "thrown primitive reports its value" "JS exception: boom" \
+    [$probe ExcMessage [dict create text Uncaught \
+        exception [dict create type string value boom]]]
+check "exceptionDetails with only text falls back to it" "JS exception: Uncaught (in promise)" \
+    [$probe ExcMessage [dict create text "Uncaught (in promise)"]]
+check "an empty envelope still names the fault" "JS exception" \
+    [$probe ExcMessage [dict create]]
 
 $probe destroy
 
