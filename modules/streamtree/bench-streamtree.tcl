@@ -3,7 +3,17 @@
 # iterations with the min-max spread (fresh widget each iteration; the first
 # iteration carries bytecode compilation and allocator warmup, which the
 # median discards), plus per-N memory medians from fresh child processes.
-# Run it headless: DISPLAY=:99 wish9.0 tests/bench-streamtree.tcl
+# Run it headless: DISPLAY=:99 wish9.0 modules/streamtree/bench-streamtree.tcl
+#
+# Measurement protocol: pin the run to the machine's performance cores and
+# report the median of three whole runs. On a hybrid CPU an unpinned run that
+# lands on an efficiency core more than doubles the streaming p95 (582 to
+# 1,508 us across eight runs on an Intel Core Ultra 7 258V), which measures
+# the core the scheduler picked rather than the widget. On that CPU the
+# performance cores are 0-3, so the published numbers were taken with
+#   DISPLAY=:99 taskset -c 0-3 wish9.0 modules/streamtree/bench-streamtree.tcl
+# Read the list off `lscpu -e`: the performance cores are the rows with the
+# higher MAXMHZ and an L3 field.
 #
 # What each scenario honestly measures (the captions in the output table
 # repeat this; keep them in sync):
