@@ -67,9 +67,6 @@ set large [string repeat "payload-64bit-length " 4000]
 check "64-bit-length frame round-trips" $large \
     [unmask_client_frame [$probe FrameMasked $large]]
 
-# A raised JS exception carries the page's own message, not CDP's bare
-# "Uncaught" envelope: an Error reports its description, a thrown primitive its
-# value, and a stack-carrying description is cut to its first line.
 oo::objdefine $probe { export ExcMessage }
 check "Error exception reports its description" "JS exception: TypeError: x is not a function" \
     [$probe ExcMessage [dict create text Uncaught \
