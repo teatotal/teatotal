@@ -1,6 +1,6 @@
 package require Tcl 9
 package require TclOO
-package provide yamlmuster 2.0
+package provide yamlmuster 2.1
 
 # yamlmuster - a rule-indexed validator for parsed YAML: partial validation
 # that bills only the checks you select, and policed rule loading from a
