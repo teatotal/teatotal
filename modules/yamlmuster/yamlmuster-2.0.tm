@@ -1,6 +1,6 @@
 package require Tcl 9
 package require TclOO
-package provide yamlmuster 1.0.1
+package provide yamlmuster 2.0
 
 # yamlmuster - a rule-indexed validator for parsed YAML: partial validation
 # that bills only the checks you select, and policed rule loading from a
@@ -78,9 +78,11 @@ package provide yamlmuster 1.0.1
 #
 # Load errors are loud and atomic: unknown kinds, missing -code, duplicate
 # levels, undeclared or unreachable levels, unregistered predicates all
-# abort the load whole, as {YAMLMUSTER LOAD <label> <line>}. The
-# validator does no I/O anywhere: the host reads the rules file and the data file,
-# yamlmuster sees only strings and dicts.
+# abort the load whole, as {YAMLMUSTER LOAD <label> <line>}. load opens
+# the rules file itself, which is what gives those errors a real line: Tcl
+# numbers the lines of a file it sources, and numbers nothing in a string.
+# Data is dict-in as before - the host parses the document and passes the
+# dict, and yamlmuster reads no data file.
 #
 # Written against Tcl 9. MIT license, copyright (c) 2025 Weiwu Zhang.
 
@@ -133,14 +135,15 @@ oo::class create yamlmuster {
     # calls, and atomic per call: declarations stage into a copy of the
     # committed ruleset, the compile runs over the union, and only a fully
     # compiled index swaps in. Any error - in the script or the compile -
-    # leaves the previous ruleset untouched. The host reads files and
-    # passes text; load takes no paths.
-    method load {script args} {
+    # leaves the previous ruleset untouched. load takes the rules file's
+    # path, not its text: `source` records the path it was given, so the
+    # failing command's line arrives in the error for free.
+    method load {path args} {
         if {[llength $args] % 2} {
             throw {YAMLMUSTER OPTION load} \
                 "yamlmuster: load options must be option-value pairs"
         }
-        set label rules
+        set label [file tail $path]
         foreach {o v} $args {
             switch -- $o {
                 -name   { set label $v }
@@ -176,14 +179,17 @@ oo::class create yamlmuster {
             interp alias $ip $verb {} \
                 [info object namespace [self]]::my Dsl_$verb
         }
-        set rc [catch {interp eval $ip $script} msg opts]
+        set rc [catch {
+            interp invokehidden $ip source -encoding utf-8 $path
+        } msg opts]
         interp delete $ip
         if {$rc} {
-            # The eval trace carries the failing command's start line as
-            # `("interp eval" body line N)`; the marker is absent when
-            # that command starts on line 1.
-            set line 1
-            regexp {\("interp eval" body line (\d+)\)} \
+            # `source` stamps the trace with `(file "<path>" line N)`.
+            # A failure with no such stamp never reached the script - an
+            # unreadable path is the case - and reports line 0, the same
+            # 0 the end-of-load compile errors use.
+            set line 0
+            regexp {\(file "[^"]*" line (\d+)\)} \
                 [dict get $opts -errorinfo] -> line
             throw [list YAMLMUSTER LOAD $label $line] \
                 "yamlmuster: rules '$label' line $line: $msg"

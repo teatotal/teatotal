@@ -1,14 +1,25 @@
 #!/usr/bin/env tclsh9.0
 # A standalone demo of yamlmuster: a small campaign-file ruleset, a clean
 # and a broken dict validated whole, two partial passes with the stats
-# that show what each one paid, and a hostile rules string refused at
-# load. It loads only the yamlmuster module - no Tk, and no YAML parser:
-# the validator is dict-in, so the "files" here are dicts already parsed.
+# that show what each one paid, and a hostile rules file refused at load
+# with the line that broke it. It loads only the yamlmuster module - no Tk,
+# and no YAML parser: the validator is dict-in, so the campaign documents
+# here are dicts already parsed, while the rules are a file, as they are in
+# a real program.
 #
 # Run it:   tclsh9.0 demos/yamlmuster-demo.tcl
 
 package require Tcl 9
 set HERE [file dirname [file normalize [info script]]]
+set TMPD [file tempdir]
+proc rulesfile {name script} {
+    set p [file join $::TMPD $name]
+    set fh [open $p w]
+    fconfigure $fh -encoding utf-8
+    puts -nonewline $fh $script
+    close $fh
+    return $p
+}
 foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
 package require yamlmuster
 
@@ -42,7 +53,7 @@ $v predicate not_expired {apply {{node meta} {
     return {}
 }}}
 
-$v load {
+$v load [rulesfile campaign.rules {
     level root    -keys {version title valid_until sender segments}
     level sender  -keys {smtp_host smtp_user smtp_port}
     level segment -keys {name quota}
@@ -59,7 +70,7 @@ $v load {
     rule require segment name -nonblank -code segment_unnamed -groups segments
     rule range segment quota -min 1 -integer -code segment_quota -groups segments
     rule predicate root not_expired -code campaign_expired -needs today
-} -name campaign
+}] -name campaign
 
 set clean {
     version 1.0
@@ -96,12 +107,13 @@ $v validate $clean
 puts "   rules_skipped_needs = [dict get [$v stats] rules_skipped_needs]"
 
 say "a hostile rules file can only declare"
-set hostile {level extra -keys {x}
-exec ls /}
-if {[catch {$v load $hostile -name hostile} msg]} {
+set hostile [rulesfile hostile.rules {level extra -keys {x}
+exec ls /}]
+if {[catch {$v load $hostile} msg]} {
     puts "   refused: $msg"
 }
 puts "   ruleset intact: [dict get [$v info rules] count] rules,\
 groups {[$v info groups]}"
 
 $v destroy
+file delete -force $TMPD

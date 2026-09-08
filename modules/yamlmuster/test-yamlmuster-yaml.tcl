@@ -12,6 +12,17 @@ set ROOT [file dirname [file dirname [file dirname [file normalize [info script]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
 package require yamlmuster
 
+# Rulesets load from a file; the name `rules` sets the label in load errors.
+set TMPD [file tempdir]
+proc rules {script} {
+    set p [file join $::TMPD rules]
+    set fh [open $p w]
+    fconfigure $fh -encoding utf-8
+    puts -nonewline $fh $script
+    close $fh
+    return $p
+}
+
 # The corpus needs the parser it measures; a shelf clone without tcllib
 # still passes the suite.
 if {[catch {package require yaml} yamlver]} {
@@ -88,13 +99,13 @@ check merge-key {defaults {x 1 y 2} item {x 1 y 9}} \
 
 # A merged mapping validates like any other dict.
 set v [yamlmuster new]
-$v load {
+$v load [rules {
     level root -keys {defaults item}
     level item -keys {x y}
     child root item dict item
     rule require item x -code missing_x
     rule range item y -min 0 -max 5 -integer -code y_range
-}
+}]
 check merge-validates {y_range} \
     [codes [$v validate [parse "defaults: &d\n  x: 1\nitem:\n  <<: *d\n  y: 9"]]]
 $v destroy
@@ -148,10 +159,10 @@ check coerce-booleans {a 1 b 0 c 1 d 0 e 1 f 0 g 1 h 0} \
 # By the time rules run, `enabled: yes` is the string 1: a oneof over the
 # source-text vocabulary fires. Pin with !!str where the text matters.
 set v [yamlmuster new]
-$v load {
+$v load [rules {
     level root -keys {enabled}
     rule oneof root enabled {yes no} -code enabled_vocab
-}
+}]
 check coerced-bool-breaks-oneof {enabled_vocab} \
     [codes [$v validate [parse "enabled: yes"]]]
 check str-tag-restores-oneof {} \
@@ -162,11 +173,11 @@ $v destroy
 # as present, and only -nonblank can tell the difference.
 check coerce-null {a {} b {} c {}} [parse "a: null\nb: ~\nc:\n"]
 set v [yamlmuster new]
-$v load {
+$v load [rules {
     level root -keys {a}
     rule require root a -code a_missing
     rule require root a -nonblank -code a_blank
-}
+}]
 check null-passes-require {a_blank} [codes [$v validate [parse "a: null\n"]]]
 $v destroy
 
@@ -176,6 +187,8 @@ check coerce-comma {a 1000} [parse "a: 1,000"]
 set d [parse "a: 2026-07-17"]
 check coerce-date-integer 1 [string is integer -strict [dict get $d a]]
 check coerce-date-epoch [clock scan 2026-07-17] [dict get $d a]
+
+file delete -force $TMPD
 
 if {$fails} {
     puts "$fails failures"

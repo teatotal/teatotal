@@ -11,15 +11,7 @@ package require yamlmuster
 
 set v [yamlmuster new]
 $v predicate fresh ::myapp::check_fresh      ;# host escape hatch
-$v load {
-    level root  -keys {version rounds}
-    level round -keys {type number}
-    child root rounds list round
-    rule oneof root version {1.0} -code version_unsupported
-    rule require root rounds -nonempty -code missing_rounds -groups shape
-    rule any root rounds -where {type final} -code no_final_round -groups shape
-    rule predicate round fresh -code stale_round -needs today
-} -name campaign
+$v load rules/campaign.rules             ;# a file, so errors carry its line
 
 set issues [$v validate $data -groups shape -limit 1]
 $v stats                                     ;# what that pass paid
@@ -27,13 +19,16 @@ $v stats                                     ;# what that pass paid
 
 ## DESCRIPTION
 
-yamlmuster validates dicts against rules, with two properties its name-brand competitors - the hand-grown one-proc-per-file-shape validators - do not have. **Partial validation**: rules are indexed by level, group tag, and severity, a validate call selects before it walks, and only the subtrees holding selected rules are entered, so you pay for the checks you asked for and `stats` shows the bill. **Policed rule loading**: the rules script is evaluated in an interpreter whose entire command table is `level`, `child`, and `rule`, so a rules file can declare and do nothing else - `exec ls` in one dies at load, with its line number, and leaves the previous ruleset untouched.
+yamlmuster validates dicts against rules, with two properties its name-brand competitors - the hand-grown one-proc-per-file-shape validators - do not have. **Partial validation**: rules are indexed by level, group tag, and severity, a validate call selects before it walks, and only the subtrees holding selected rules are entered, so you pay for the checks you asked for and `stats` shows the bill. **Policed rule loading**: `load` sources the rules file into an interpreter whose entire command table is `level`, `child`, and `rule`, so a rules file can declare and do nothing else - `exec ls` in one dies at load, naming the line it sits on, and leaves the previous ruleset untouched.
 
 yamlmuster is dict-in: it never parses YAML. A parser - tcllib's yaml, for the programs this grew in - turns the file into a Tcl dict, and yamlmuster validates the dict. The verified compatibility level is measured, parser version and exclusions named, in YAML COMPATIBILITY below; the name promises no more than the parser feeding it delivers.
 
-The validator does no I/O anywhere: the host reads the rules file and the data file, yamlmuster sees only strings and dicts. One instance carries one ruleset; a program validating several document kinds holds one instance per kind.
+`load` takes the rules file's path and opens it, which is what gives its errors a line: Tcl numbers the lines of a file it sources and numbers nothing in a string. Data is the other way round - the host parses the document and passes the dict, and yamlmuster reads no data file. One instance carries one ruleset; a program validating several document kinds holds one instance per kind.
 
 ## THE RULES FILE
+
+**$v load** *path* ?**-name** *label*?
+: Source a rules file. *label* names the file in load errors and defaults to the path's tail.
 
 Three verbs, flat, no script bodies. Loads are additive across calls and atomic per call: declarations stage into a copy, the compile runs over the union, and only a fully compiled index swaps in - any error, in the script or the compile, leaves the previous ruleset as it was.
 
@@ -100,9 +95,9 @@ Three verbs, flat, no script bodies. Loads are additive across calls and atomic 
 
 ## THE POLICED INTERPRETER
 
-Each load evaluates the rules script in a fresh `interp create -safe` child that is then stripped: `::oo` is deleted while `namespace` is still alive (a safe interp ships TclOO, reachable by qualified name), every exposed global command is hidden, and `::tcl` is deleted through the hidden `namespace` - removing `::tcl::mathfunc` and `::tcl::mathop` too. What remains resolvable is exactly the three aliases, each bound to a registration-only method in the host object; the tests assert the containment against `set`, `exec`, `open`, `source`, `package require`, `eval`, `interp create`, and `while`. The child is deleted after the eval; no state crosses loads.
+Each load sources the rules file into a fresh `interp create -safe` child that is then stripped: `::oo` is deleted while `namespace` is still alive (a safe interp ships TclOO, reachable by qualified name), every exposed global command is hidden, and `::tcl` is deleted through the hidden `namespace` - removing `::tcl::mathfunc` and `::tcl::mathop` too. What remains resolvable is exactly the three aliases, each bound to a registration-only method in the host object; the tests assert the containment against `set`, `exec`, `open`, `source`, `package require`, `eval`, `interp create`, and `while`. The child is deleted after the load; no state crosses loads. `source` itself stays hidden in the child, invoked on its behalf by the host, so a rules file cannot source anything of its own.
 
-Comments and line continuations are parse-level and survive; an empty or comment-only script loads to zero rules. Any other command dies as `invalid command name`, and every load error is rethrown as `yamlmuster: rules '<label>' line <n>: ...` with `-errorcode {YAMLMUSTER LOAD <label> <n>}` (`<label>` from load's `-name`, default `rules`; line 0 for end-of-load compile errors, which have no script line).
+Comments and line continuations are parse-level and survive; an empty or comment-only file loads to zero rules. Any other command dies as `invalid command name`, and every load error is rethrown as `yamlmuster: rules '<label>' line <n>: ...` with `-errorcode {YAMLMUSTER LOAD <label> <n>}`. `<label>` is the file's tail, or whatever `-name` overrides it with. `<n>` is the line the failing command sits on; it is 0 for the end-of-load compile errors, which belong to no one line, and 0 when the file could not be read at all.
 
 ## VALIDATION
 

@@ -9,6 +9,19 @@ set ROOT [file dirname [file dirname [file dirname [file normalize [info script]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
 package require yamlmuster
 
+# The module loads rules from a file, so the tests write one. It is always
+# named `rules`, so the label yamlmuster derives from the path keeps every
+# expectation below reading `rules '<label>'`.
+set TMPD [file tempdir]
+proc rules {script} {
+    set p [file join $::TMPD rules]
+    set fh [open $p w]
+    fconfigure $fh -encoding utf-8
+    puts -nonewline $fh $script
+    close $fh
+    return $p
+}
+
 set fails 0
 proc check {name expected actual} {
     if {$expected ne $actual} {
@@ -46,7 +59,7 @@ $A predicate desync {apply {{node meta} {
     }
     return {}
 }}}
-$A load {
+$A load [rules {
     level root        -keys {version decisions rounds profile_hash}
     level decisions   -keys {channel language angle}
     level round       -keys {type number messages}
@@ -84,7 +97,7 @@ $A load {
         -groups email
     rule predicate message desync -code email_desync -severity warning \
         -needs roster_email -groups {email rosteronly}
-} -name approach
+}] -name approach
 
 proc msg_email {args} {
     return [dict merge [dict create channel email subject S body B to a@b.co] $args]
@@ -231,16 +244,16 @@ $P predicate multi {apply {{node meta} {
         [dict create code second_code severity error message second]]
 }}}
 $P predicate boom {apply {{node meta} { error "predicate exploded" }}}
-$P load {
+$P load [rules {
     level root -keys {a}
     rule predicate root multi -code first_code -severity warning
-}
+}]
 set is [$P validate {a 1}]
 check pred-two-issues {first_code second_code} [codes $is]
 check pred-override-severity {warning error} [lmap i $is {dict get $i severity}]
-$P load {
+$P load [rules {
     rule predicate root boom -code kaboom -groups explode
-}
+}]
 set rc [catch {$P validate {a 1} -groups explode} msg opts]
 check pred-throw-rc 1 $rc
 checkmatch pred-throw-msg {yamlmuster: predicate 'boom' (rule kaboom): predicate exploded} $msg
@@ -331,7 +344,7 @@ foreach {what script} {
     interp          {interp create}
     while           {while 1 {}}
 } {
-    set rc [catch {$A load "level q$what -keys {a}\n$script"} msg opts]
+    set rc [catch {$A load [rules "level q$what -keys {a}\n$script"]} msg opts]
     check policing-$what-throws 1 $rc
     checkmatch policing-$what-msg "yamlmuster: rules 'rules' line 2: invalid command name*" $msg
     check policing-$what-code {YAMLMUSTER LOAD rules 2} [dict get $opts -errorcode]
@@ -340,10 +353,10 @@ foreach {what script} {
 
 # A failed load's declarations never commit: the level it staged can be
 # declared again by the next, clean load.
-set rc [catch {$A load "level ghost -keys {a}\nrule bogus ghost"} msg]
+set rc [catch {$A load [rules "level ghost -keys {a}\nrule bogus ghost"]} msg]
 check staging-discarded-rc 1 $rc
 checkmatch staging-discarded-msg {*unknown rule kind 'bogus'*} $msg
-set rc [catch {$A load "level ghost -keys {a}\nchild root profile_hash dict ghost"} msg]
+set rc [catch {$A load [rules "level ghost -keys {a}\nchild root profile_hash dict ghost"]} msg]
 check staging-reusable 0 $rc
 
 # -- load-time fail-loud ---------------------------------------------------------
@@ -386,7 +399,7 @@ rule any root a -code c}                {*-where {field value ...} is required*}
     atmost-bad-cap  {level root -keys {a}
 rule atmost root a lots -code c}        {*cap must be a non-negative integer*}
 } {
-    set rc [catch {$F load $script} msg opts]
+    set rc [catch {$F load [rules $script]} msg opts]
     check load-$what-throws 1 $rc
     checkmatch load-$what-msg $pattern $msg
     checkmatch load-$what-code {YAMLMUSTER LOAD rules *} [dict get $opts -errorcode]
@@ -400,7 +413,7 @@ check predicate-duplicate-code {YAMLMUSTER PREDICATE desync} [dict get $opts -er
 
 # A cross-load duplicate level errors too: the union compiles, so a second
 # load cannot quietly redeclare the first one's vocabulary.
-set rc [catch {$A load {level root -keys {other}}} msg]
+set rc [catch {$A load [rules {level root -keys {other}}]} msg]
 check duplicate-level-across-loads 1 $rc
 checkmatch duplicate-level-across-loads-msg {*already declared*} $msg
 
@@ -428,8 +441,8 @@ check missing-subtree-silent {} [codes [$A validate $d -groups li]]
 
 # Empty and comment-only loads compile to zero rules; validate pays nothing.
 set E [yamlmuster new]
-$E load {}
-$E load "# only a comment\n# and another"
+$E load [rules {}]
+$E load [rules "# only a comment\n# and another"]
 check empty-load-rules {count 0 codes {}} [$E info rules]
 check empty-load-validate {} [$E validate {a 1}]
 check empty-load-stats [dict create rules_selected 0 rules_evaluated 0 \
@@ -474,11 +487,11 @@ check extra-validator-wins version_unsupported [dict get $i code]
 # owner is dropped even on issues that do not emit that field themselves
 # (a bad_node emits neither; unknown_key emits key but not owner).
 set B [yamlmuster new]
-$B load {level root -keys {a}
+$B load [rules {level root -keys {a}
 child root items list item
 level item -keys {b}
 rule vocab root
-rule vocab item}
+rule vocab item}]
 set is [$B validate {a 1 items {{b 1 c 2} {odd}}} -extra {key INJ owner INJ tag T}]
 set leaked 0
 foreach i $is {
@@ -493,19 +506,19 @@ $B destroy
 # A predicate registered after a load serves the next load; the compiled
 # rules are untouched.
 set L [yamlmuster new]
-set rc [catch {$L load {level root -keys {a}
-rule predicate root late -code c}} msg]
+set rc [catch {$L load [rules {level root -keys {a}
+rule predicate root late -code c}]} msg]
 check late-predicate-refused 1 $rc
 $L predicate late {apply {{node meta} { return {} }}}
-set rc [catch {$L load {level root -keys {a}
-rule predicate root late -code c}} msg]
+set rc [catch {$L load [rules {level root -keys {a}
+rule predicate root late -code c}]} msg]
 check late-predicate-accepted 0 $rc
 $L destroy
 
 # -- two instances coexist ------------------------------------------------------
 
 set B [yamlmuster new]
-$B load {
+$B load [rules {
     level root   -keys {version sender star_rating yield}
     level sender -keys {smtp_host smtp_user smtp_port}
     child root sender dict sender
@@ -514,7 +527,7 @@ $B load {
     rule range sender smtp_port -integer -severity warning -code smtp_port_non_numeric
     rule range root star_rating -min 1 -max 5 -integer -code invalid_star_rating
     rule range root yield -min 0 -integer -code invalid_yield
-} -name campaign
+}] -name campaign
 
 set CAMP {version 1.0 sender {smtp_host mail.x.co smtp_user u smtp_port 587} star_rating 3 yield 2}
 check b-clean {} [$B validate $CAMP]
@@ -536,6 +549,8 @@ check b-groups {} [$B info groups]
 check a-still-valid {} [$A validate $CLEAN]
 $B destroy
 $A destroy
+
+file delete -force $TMPD
 
 if {$fails} {
     puts "$fails failures"
