@@ -88,7 +88,7 @@ The runner turns the StreamTree and StreamDoc audit gates on for the whole suite
 
 Send a pull request with a `modules/name/` directory holding your `name-version.tm` file (lowercase name, as TIP 590 recommends) and a `name.md` man page beside it. The module is plain Tcl source and runs on Tcl 9: that is the promise every download from here carries, so yours carries it too. That is the whole bar: the PR will be merged.
 
-The in-house modules grow inside the applications they were written for and sync here when a version is published. This repository is the published home of their source and man pages: the code evolves in its host, and each release lands here as the stable copy you fetch.
+The in-house modules grow inside the applications they were written for and sync here when a version is published. This repository is the published home of their source and man pages: the code evolves in its host, and each release lands here as the stable copy you fetch. If you carry one of these files in your own `vendor/` directory, `docs/vendoring.md` sets out how a copy tracks its release.
 
 ## License
 
