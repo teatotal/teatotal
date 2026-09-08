@@ -30,25 +30,16 @@ package provide yamlmuster 2.0
 # visit and rule evaluation, so partial validation is a number a test
 # asserts, not a hope.
 #
-# The rules arrive as a script evaluated in a policed interpreter. Not
-# merely safe: after construction the child's entire command table is
-# `level`, `child`, and `rule` - no set, no proc, no expr, no if, and no
-# ::tcl:: or ::oo:: name reachable qualified. A rules file can declare and
-# do nothing else; `exec ls` in one dies at load with its line number, and
-# a failed load leaves the previous ruleset untouched.
+# The rules file is sourced into a policed interpreter. Not merely safe:
+# after construction the child's entire command table is `level`, `child`,
+# and `rule` - no set, no proc, no expr, no if, and no ::tcl:: or ::oo::
+# name reachable qualified. A rules file can declare and do nothing else;
+# `exec ls` in one dies at load with its line number, and a failed load
+# leaves the previous ruleset untouched.
 #
 #   set v [yamlmuster new]
 #   $v predicate fresh ::myapp::check_fresh       ;# host escape hatch
-#   $v load {
-#       level root  -keys {version rounds}
-#       level round -keys {type number}
-#       child root rounds list round
-#       rule oneof root version {1.0} -code version_unsupported
-#       rule require root rounds -nonempty -code missing_rounds -groups shape
-#       rule any root rounds -where {type final} -code no_final_round \
-#           -groups shape
-#       rule predicate round fresh -code stale_round -needs today
-#   }
+#   $v load rules/campaign.rules
 #   set issues [$v validate $data -groups shape -limit 1]
 #   $v stats    ;# what that pass paid: rules selected/evaluated/skipped,
 #               ;# nodes visited, issues and errors emitted
@@ -131,7 +122,7 @@ oo::class create yamlmuster {
         return
     }
 
-    # Evaluate a rules script in a fresh policed interp. Additive across
+    # Source a rules file in a fresh policed interp. Additive across
     # calls, and atomic per call: declarations stage into a copy of the
     # committed ruleset, the compile runs over the union, and only a fully
     # compiled index swaps in. Any error - in the script or the compile -
