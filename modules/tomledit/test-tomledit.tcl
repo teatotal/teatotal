@@ -8,7 +8,10 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
+# The newest file under test, a draft beside the release included.
+package prefer latest
 package require tomledit
+puts "tomledit [package present tomledit]"
 
 set fails 0
 proc check {name expected actual} {
@@ -85,6 +88,29 @@ port = 2222
 
 [[ssh.host]]
 host = "spare"
+
+[dotfiles_tool]
+generated_at = "2026-08-01"
+}
+
+# A file whose inline-row array carries everything a row writer must not
+# disturb: a comment line between rows, odd spacing inside a row, a
+# trailing same-line comment, a last row without its trailing comma, a
+# `[` inside a quoted value, a sibling key in the parent table, and a
+# table after the array.
+set bindfixture {# Keys.
+
+[general]
+font_scaling = 1.2
+
+[bindings]
+note = "kept"
+keys = [
+  # the fold
+  { key = "b", with = "ctrl | shift", action = "fold_bank" },
+  { key = "c",  with = "ctrl | shift",   action = "pass" },	# let ^C through
+  { key = "f5", esc = "[15~" }
+]
 
 [dotfiles_tool]
 generated_at = "2026-08-01"
@@ -282,6 +308,102 @@ check guard_inline_table_refused \
 check guard_multiline_array_refused \
     {line 2 opens a multiline array} \
     [tomledit::unsafe "\[extra\]\nxs = \[\n1,\n2,\n\]\n"]
+
+# ---- inline-row arrays --------------------------------------------------------
+set pb [tomledit::parse $bindfixture]
+check inline_parse_rows_in_order {{"b"} {"c"} {"f5"}} \
+    [lmap entry [dict get $pb arrays bindings.keys] { dict get $entry key }]
+check inline_parse_row_values_raw {{"ctrl | shift"} {"pass"} {"[15~"}} \
+    [list [dict get [lindex [dict get $pb arrays bindings.keys] 0] with] \
+        [dict get [lindex [dict get $pb arrays bindings.keys] 1] action] \
+        [dict get [lindex [dict get $pb arrays bindings.keys] 2] esc]]
+check inline_parse_sibling_key_kept {"kept"} [dict get $pb tables bindings note]
+check inline_array_is_not_a_table_value 0 \
+    [dict exists $pb tables bindings keys]
+check inline_count 3 [tomledit::count $bindfixture bindings.keys]
+check inline_get_row_key {"pass"} \
+    [tomledit::get $bindfixture {bindings.keys[1].action}]
+check inline_get_absent_fallback none \
+    [tomledit::get $bindfixture {bindings.keys[2].action} none]
+check inline_put_touches_one_line \
+    {{{  { key = "b", with = "ctrl | shift", action = "fold_bank" },}} {{  { key = "b", with = "ctrl | shift", action = "unfold" },}}} \
+    [surgery $bindfixture \
+        [tomledit::put $bindfixture {bindings.keys[0].action} {"unfold"}]]
+check inline_put_keeps_spacing_and_comment \
+    "{{  { key = \"c\",  with = \"ctrl | shift\",   action = \"pass\" },\t# let ^C through}} {{  { key = \"c\",  with = \"alt\",   action = \"pass\" },\t# let ^C through}}" \
+    [surgery $bindfixture \
+        [tomledit::put $bindfixture {bindings.keys[1].with} {"alt"}]]
+set out [tomledit::put $bindfixture {bindings.keys[2].with} {"none"}]
+check inline_put_absent_key_added_last \
+    {{{  { key = "f5", esc = "[15~" }}} {{  { key = "f5", esc = "[15~", with = "none" }}}} \
+    [surgery $bindfixture $out]
+check inline_put_absent_key_reads_back {"none"} \
+    [tomledit::get $out {bindings.keys[2].with}]
+check inline_del_key_middle \
+    {{{  { key = "b", with = "ctrl | shift", action = "fold_bank" },}} {{  { key = "b", action = "fold_bank" },}}} \
+    [surgery $bindfixture [tomledit::del $bindfixture {bindings.keys[0].with}]]
+check inline_del_key_first \
+    {{{  { key = "f5", esc = "[15~" }}} {{  { esc = "[15~" }}}} \
+    [surgery $bindfixture [tomledit::del $bindfixture {bindings.keys[2].key}]]
+check inline_del_absent_key_is_byte_noop 1 \
+    [string equal $bindfixture [tomledit::del $bindfixture {bindings.keys[0].esc}]]
+check inline_del_last_key_is_error 1 \
+    [catch {tomledit::del \
+        "\[b\]\nkeys = \[\n  { key = \"x\" },\n\]\n" {b.keys[0].key}}]
+check inline_remove_row_leaves_comment_and_neighbours \
+    {{{  { key = "b", with = "ctrl | shift", action = "fold_bank" },}} {}} \
+    [surgery $bindfixture [tomledit::del $bindfixture {bindings.keys[0]}]]
+set out [tomledit::del [tomledit::del [tomledit::del $bindfixture \
+    {bindings.keys[2]}] {bindings.keys[1]}] {bindings.keys[0]}]
+check inline_remove_every_row_leaves_the_brackets {0 1} \
+    [list [tomledit::count $out bindings.keys] \
+        [string match "*keys = \\\[\n  # the fold\n\]*" $out]]
+check inline_bad_index_is_error 1 \
+    [catch {tomledit::put $bindfixture {bindings.keys[3].key} {"x"}}]
+# The last row of the fixture lacks its trailing comma, so the append is
+# the one edit here that touches two lines: TOML asks for the comma.
+check inline_add_after_last_gives_it_a_comma \
+    {{{  { key = "f5", esc = "[15~" }}} {{  { key = "f5", esc = "[15~" },} {  { key = "q", action = "swallow" },}}} \
+    [surgery $bindfixture \
+        [tomledit::add $bindfixture bindings.keys {key {"q"} action {"swallow"}}]]
+set text "\[bindings\]\nkeys = \[\n    { key = \"a\" },\n\]\n"
+check inline_add_follows_row_indent_and_comma \
+    {{} {{    { key = "b", esc = "x" },}}} \
+    [surgery $text [tomledit::add $text bindings.keys {key {"b"} esc {"x"}}]]
+check inline_add_into_empty_array_indents_one_step \
+    "\[bindings\]\nkeys = \[\n  { key = \"a\" },\n\]\n" \
+    [tomledit::add "\[bindings\]\nkeys = \[\n\]\n" bindings.keys {key {"a"}}]
+check inline_add_creates_array_in_parent \
+    "\[general\]\nk = 1\n\n\[bindings\]\nnote = \"kept\"\nkeys = \[\n  { key = \"a\" },\n\]\n\n\[z\]\n" \
+    [tomledit::add "\[general\]\nk = 1\n\n\[bindings\]\nnote = \"kept\"\n\n\[z\]\n" \
+        bindings.keys {key {"a"}} inline]
+check inline_add_creates_parent_table_too \
+    "\[general\]\nk = 1\n\n\[bindings\]\nkeys = \[\n  { key = \"a\" },\n\]\n" \
+    [tomledit::add "\[general\]\nk = 1\n" bindings.keys {key {"a"}} inline]
+check inline_add_default_shape_is_still_the_header \
+    "\[\[bindings.keys\]\]\nkey = \"a\"\n" \
+    [tomledit::add "" bindings.keys {key {"a"}}]
+check inline_shape_wins_over_asked_shape 4 \
+    [tomledit::count [tomledit::add $bindfixture bindings.keys {key {"z"}} header] \
+        bindings.keys]
+check inline_and_header_rows_coexist {3 3} \
+    [list [tomledit::count "$sshfixture\n$bindfixture" ssh.host] \
+        [tomledit::count "$sshfixture\n$bindfixture" bindings.keys]]
+check inline_guard_accepts_fixture {} [tomledit::unsafe $bindfixture]
+check inline_guard_still_refuses_scalar_rows \
+    {line 2 opens a multiline array} \
+    [tomledit::unsafe "\[b\]\nkeys = \[\n  { key = \"a\" },\n  1,\n\]\n"]
+check inline_guard_still_refuses_unclosed \
+    {line 2 opens a multiline array} \
+    [tomledit::unsafe "\[b\]\nkeys = \[\n  { key = \"a\" },\n"]
+check inline_guard_still_refuses_empty_table_row \
+    {line 2 opens a multiline array} \
+    [tomledit::unsafe "\[b\]\nkeys = \[\n  {},\n\]\n"]
+check inline_guard_still_refuses_rows_inside_a_header_row \
+    {line 2 opens a multiline array} \
+    [tomledit::unsafe "\[\[r\]\]\nkeys = \[\n  { key = \"a\" },\n\]\n"]
+check inline_top_level_array_is_named_by_its_key {"a"} \
+    [tomledit::get "keys = \[\n  { key = \"a\" },\n\]\n\n\[t\]\n" {keys[0].key}]
 
 # ---- files ------------------------------------------------------------------
 check read_missing_is_empty {} \
