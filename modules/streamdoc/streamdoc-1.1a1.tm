@@ -597,13 +597,13 @@ oo::class create ::streamdoc::StreamDoc {
     # The one jump gate: `see` cannot land on an elided char, so unfold the
     # target's region first, and show its detail only when the index itself
     # sits in the detail layer - jumping to a visible line must not spill the
-    # region's hidden blocks. The see must wait for the reshaped line
+    # region's hidden blocks. The scroll must wait for the reshaped line
     # metrics. An un-elide moves thousands of display lines and the relayout
     # registers through an idle handler; a bare `see` in the same callback
     # scrolls to where the target used to be. A targeted `count -update`
     # fires too early, and so does a bare `sync`, both ahead of the idle
     # relayout that invalidates the metrics. Hence: drain idletasks, then
-    # sync, then see. Click-latency price, paid only on a jump.
+    # sync, then scroll. Click-latency price, paid only on a jump.
     #
     # align `see` scrolls the least that brings the index into view; `top`
     # puts its line on the top edge, or as near as the widget scrolls when
