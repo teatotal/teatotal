@@ -155,7 +155,9 @@ it. A glyphed bool draws as a mark in the subject zone, placed `prefix`
 the zone's end, a gap short of the first metadata cell, the subject ellipsised
 first so the cluster stays whole; declaring one puts a right stop at that end
 on every row and the header, ahead of the column stops); a glyphless one as a
-check-mark column.
+check-mark column. The budget `render_subject` is handed is already less the
+marks the row draws, its prefix marks since 0.9.1 and its trailing cluster
+with its gap.
 Filter controls build into a frame the host owns (a checkbutton per bool, a
 stay-open combobox-style popdown per enum with select all and none, dismissed by a click outside, Escape, or the window moving); an enum filter is a
 set of excluded values. Values reach the base class only through the attr_value
@@ -178,16 +180,20 @@ what an existing subclass has to answer differently when it takes that release.
 The record starts at 0.4.0; anything earlier is in the commit log at the
 module's home repository alone.
 
-**0.9.1**, in draft as `0.9.1a1`, which `package prefer latest` loads. A
+**0.9.1**, in draft as `0.9.1a2`, which `package prefer latest` loads. A
 row's image spans the whole row. `row_spacing kind` answers the gaps a row
 keeps above and below its text, and the base class keeps them inside the
 line, where the image reaches, by holding the text off the centre of the
 taller line. Tk's own `-spacing1` and `-spacing3` sit outside every image,
 so a guide drawn down rows spaced with them breaks at each gap, and an
-`-offset` on a row's whole line does not set the gaps. A subclass answers
-for nothing until it answers the hook; from then an `-offset` on a row's
-own tags shifts its text against the base class's placement, so those tags
-carry none.
+`-offset` on a row's whole line does not set the gaps. The budget
+`render_subject` is handed is also less a row's prefix marks, as it already
+was less its image and its trailing cluster, so a subject cut to the budget
+leaves the cluster on its stop. A subclass answers for two things. One that
+subtracted its prefix glyphs' width from the budget no longer does, or the
+width comes off twice. One that answers `row_spacing` keeps `-offset` off
+its rows' own tags, where it would shift the text against the base class's
+placement.
 
 **0.9.0.** A row leads with an image a host supplies: the `row_image`
 hook answers the options of one embedded image per row (a kind icon, a

@@ -1,7 +1,7 @@
 package require Tcl 9
 package require Tk
 package require leash
-package provide streamtree 0.9.1a1
+package provide streamtree 0.9.1a2
 
 namespace eval ::streamtree {}
 
@@ -1143,16 +1143,18 @@ oo::class create ::streamtree::StreamTree {
     # subjtags meta_run meta_off offs}: image is the row_image options, offs
     # maps each laid column id to its {off len} range for cell tagging, and
     # every offset counts from the text, past the prefix. The subject's budget
-    # is the zone less the image and, on a row with trailing marks, less the
-    # marks and a gap, so the subject ellipsises first and the marks stay whole.
+    # is the zone less what the row lays ahead of it, the image and the prefix,
+    # and, on a row with trailing marks, less the marks and a gap, so the
+    # subject ellipsises first and the marks stay whole.
     method build_line {node} {
         set image [my row_image $node]
         set lead_w 0
         if {[llength $image]} {
             set lead_w [expr {[image width [dict get $image -image]] + 2 * [dict getdef $image -padx 0]}]
         }
-        set max [expr {$SubjectMax - $lead_w}]
         lassign [my subject_prefix $node] ptext ptags
+        if {$ptext ne ""} { incr lead_w [font measure [my opt listfont] $ptext] }
+        set max [expr {$SubjectMax - $lead_w}]
         set trailing [my attr_trailing]
         set ttext ""
         if {[llength $trailing]} {
