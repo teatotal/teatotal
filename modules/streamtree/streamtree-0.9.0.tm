@@ -1961,9 +1961,7 @@ oo::class create ::streamtree::StreamTree {
         return $cells
     }
 
-    # The glyphed bools placed trail, in declaration order: the marks a row
-    # ends its subject zone with, and, declared at all, the reason every row
-    # tabs to the trailing stop.
+    # The glyphed bools placed trail, in declaration order.
     method attr_trailing {} {
         set out [list]
         foreach id [my attr_order] {
