@@ -63,6 +63,8 @@ Match snippets and badge windows are loose row content, not nodes. They go throu
 - `emit mark text tags` / `emit_window mark args` / `emit_image mark args` → insert text, an embedded window or an embedded image
 - `append_close id mark` → advance the marks past what was emitted
 
+Use the door inside a `batch`, which makes the list editable. Outside one the list is read-only: Tk drops the emitted text and still lays an emitted window or image, so the line comes out without its text and its newline.
+
 ## THE STREAMING CONTRACT
 
 The widget's defining behaviour: content arriving while the user reads never moves what they are reading.
