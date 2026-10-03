@@ -231,6 +231,8 @@ oo::class create ::streamtree::StreamTree {
     # Declarative attributes: the parsed descriptor set and the live filter state.
     variable AttrOrder        ;# declared attribute ids, in declaration order
     variable AttrSpec         ;# id -> descriptor dict
+    variable AttrPrefix       ;# the glyphed bools placed prefix, in declaration order
+    variable AttrTrailing     ;# the glyphed bools placed trail, in declaration order
     variable AttrFilter       ;# filterable id -> filter state (bool 0|1; enum excluded list)
     variable AttrPopTop       ;# the enum checklist popdown, or "" when none is open
     variable AttrPopId        ;# the attribute the open popover filters
@@ -1149,7 +1151,11 @@ oo::class create ::streamtree::StreamTree {
         }
         set max [expr {$SubjectMax - $lead_w}]
         lassign [my subject_prefix $node] ptext ptags
-        lassign [my subject_trail $node] ttext ttags
+        set trailing [my attr_trailing]
+        set ttext ""
+        if {[llength $trailing]} {
+            lassign [my attr_marks $node $trailing] ttext ttags
+        }
         if {$ttext ne ""} {
             set max [expr {min($max, $TrailX - [font measure [my opt listfont] $ttext] - $ColGap - $lead_w)}]
         }
@@ -1162,7 +1168,7 @@ oo::class create ::streamtree::StreamTree {
         }]
         set meta_run [dict getdef $sub meta_run 0]
         set line $ptext$subject
-        if {[llength [my attr_trailing]]} {
+        if {[llength $trailing]} {
             append line "\t"
             set toff [string length $line]
             append line $ttext
@@ -1187,14 +1193,14 @@ oo::class create ::streamtree::StreamTree {
     }
 
     # Lay a built row at a right-gravity mark: its image first, when it leads
-    # with one, then its text, all under the row's tags.
-    method lay_line {mark info tags} {
+    # with one, then its text and whatever follows it, all under the row's tags.
+    method lay_line {mark info tags {after ""}} {
         set image [dict get $info image]
         if {[llength $image]} {
             $Text image create $mark {*}$image
             foreach t $tags { $Text tag add $t "$mark - 1c" }
         }
-        $Text insert $mark [dict get $info line] $tags
+        $Text insert $mark "[dict get $info line]$after" $tags
     }
 
     # Run one row's build, build_line through apply_line, with the node held as
@@ -1371,9 +1377,7 @@ oo::class create ::streamtree::StreamTree {
         set rstart [$Text index $tmp]
         my row_build $id {
             set info [my build_line $id]
-            set tags [list {*}[my row_tags $kind] $tag]
-            my lay_line $tmp $info $tags
-            $Text insert $tmp "\n" $tags
+            my lay_line $tmp $info [list {*}[my row_tags $kind] $tag] "\n"
             my apply_line $id $rstart $info
         }
         set rowend [$Text index $tmp]
@@ -1880,11 +1884,20 @@ oo::class create ::streamtree::StreamTree {
     method parse_attrs {} {
         set AttrOrder [list]
         set AttrSpec [dict create]
+        set AttrPrefix [list]
+        set AttrTrailing [list]
         if {![info exists AttrFilter]} { set AttrFilter [dict create] }
         foreach d [my opt attrs] {
             set id [dict get $d id]
             lappend AttrOrder $id
             dict set AttrSpec $id $d
+            if {[dict getdef $d kind bool] eq "bool" && [dict getdef $d glyph ""] ne ""} {
+                if {[dict getdef $d place prefix] eq "trail"} {
+                    lappend AttrTrailing $id
+                } else {
+                    lappend AttrPrefix $id
+                }
+            }
             if {[dict getdef $d filterable 0] && ![dict exists $AttrFilter $id]} {
                 dict set AttrFilter $id \
                     [expr {[dict getdef $d kind bool] eq "bool" ? 0 : [list]}]
@@ -1962,15 +1975,7 @@ oo::class create ::streamtree::StreamTree {
     }
 
     # The glyphed bools placed trail, in declaration order.
-    method attr_trailing {} {
-        set out [list]
-        foreach id [my attr_order] {
-            if {[my attr_kind $id] eq "bool" && [my attr_place $id] eq "trail"} {
-                lappend out $id
-            }
-        }
-        return $out
-    }
+    method attr_trailing {} { my attr_ensure; return $AttrTrailing }
 
     # The glyphs of a row's true glyphed bools among ids, in that order, each
     # under its `attr-<id>` tag: {text tags}, the tags relative to the text,
@@ -1990,19 +1995,11 @@ oo::class create ::streamtree::StreamTree {
     # The subject prefix a row carries: the marks of its prefix-placed glyphed
     # bools, then one space before the subject.
     method subject_prefix {node} {
-        set ids [list]
-        foreach id [my attr_order] {
-            if {[my attr_kind $id] eq "bool" && [my attr_glyph $id] ne "" \
-                    && [my attr_place $id] eq "prefix"} { lappend ids $id }
-        }
-        lassign [my attr_marks $node $ids] text tags
+        my attr_ensure
+        lassign [my attr_marks $node $AttrPrefix] text tags
         if {$text ne ""} { append text " " }
         return [list $text $tags]
     }
-
-    # The marks a row ends its subject zone with: those of its trail-placed
-    # glyphed bools, right-aligned on the trailing stop.
-    method subject_trail {node} { return [my attr_marks $node [my attr_trailing]] }
 
     # ---- attribute filtering ------------------------------------------
 
