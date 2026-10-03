@@ -19,6 +19,8 @@
 # repeat this; keep them in sync):
 #   S1 bulk flat    N root rows, no event-loop entry, one flush at the end;
 #                   any widget batched this way also flushes once
+#   S1b image-led   the S1 rows, each led by one embedded image through the
+#                   row_image hook, an icon no taller than the row's text
 #   S2 bulk treed   100 expanded folders x N/100 children, same shape
 #   S3 streaming    10k treed resident, reader mid-list, 1000 single bracketed
 #                   inserts into the topmost folder (above the viewport), one
@@ -101,10 +103,10 @@ if {[llength $argv] == 3 && [lindex $argv 0] eq "childmem"} {
 }
 
 # ---- scenario bodies --------------------------------------------------------
-proc fresh {} {
+proc fresh {{class ::streamtree::StreamTree}} {
     catch {destroy .f}
     pack [ttk::frame .f] -fill both -expand 1
-    set d [::streamtree::StreamTree new]
+    set d [$class new]
     $d setup .f
     update
     if {![winfo viewable .f.body.t]} { error "text widget not viewable; timings would omit paint" }
@@ -112,8 +114,14 @@ proc fresh {} {
 }
 proc teardown {d} { $d destroy; destroy .f; update }
 
-proc bulk_flat {n} {
-    set d [fresh]
+image create photo benchlead -width 12 -height 12
+oo::class create ImageLed {
+    superclass ::streamtree::StreamTree
+    method row_image {node} { return {-image benchlead} }
+}
+
+proc bulk_flat {n {class ::streamtree::StreamTree}} {
+    set d [fresh $class]
     set t0 [clock microseconds]
     $d anchor_save
     for {set i 0} {$i < $n} {incr i} {
@@ -355,6 +363,10 @@ puts "|---|---|---|---|---|"
 foreach n {1000 10000 50000} {
     set v [list [bulk_flat $n] [bulk_flat $n] [bulk_flat $n]]
     puts "| streamtree bulk, flat | $n | [spread_ms $v] | [usrow [median3 $v] $n] µs | single flush for the whole batch |"
+}
+foreach n {10000 50000} {
+    set v [list [bulk_flat $n ImageLed] [bulk_flat $n ImageLed] [bulk_flat $n ImageLed]]
+    puts "| streamtree bulk, flat, image-led | $n | [spread_ms $v] | [usrow [median3 $v] $n] µs | the flat rows, each led by one embedded image |"
 }
 foreach n {10000 50000} {
     set v [list [bulk_treed $n] [bulk_treed $n] [bulk_treed $n]]
