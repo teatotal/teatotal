@@ -38,6 +38,7 @@ check "both roots and the expanded folder's children render under defaults" 4 \
     [llength [$d all_rendered_nodes]]
 check "labelless row falls back to its key" 1 \
     [expr {[string first bread [$T get 1.0 end]] >= 0}]
+check "no row leads with an image under the default hook" 0 [llength [$T dump -image 1.0 end]]
 check "no audit trip after inserts" 0 [tripped]
 
 # The zero-column paths: a header click and a relayout land on no columns.

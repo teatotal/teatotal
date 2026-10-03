@@ -87,9 +87,13 @@ $d unhide $l3
 check "hide and unhide at depth three bring the leaf back too" 1 [$d node_field $l4 rendered]
 $d node_pset $l3 label "level three, renamed"
 $d item $l3
-set m [$d append_open $l4]
-$d emit $m "loose content under the leaf\n" {}
-$d append_close $l4 $m
+$d batch {
+    set m [$d append_open $l4]
+    $d emit $m "loose content under the leaf\n" {}
+    $d append_close $l4 $m
+}
+check "the loose content lands under the leaf" "loose content under the leaf" \
+    [$T get "[$d node_field $l4 start] + 1 line" "[$d node_field $l4 start] + 1 line lineend"]
 check "every ancestor end rides the loose content forward" \
     [lrepeat 4 [$T index [$d node_field $l4 end]]] \
     [lmap id [list $l1 $l2 $l3 $l4] { $T index [$d node_field $id end] }]

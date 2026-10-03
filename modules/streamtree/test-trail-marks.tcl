@@ -21,7 +21,7 @@ proc check {name expected actual} {
     } else { puts "ok:   $name" }
 }
 
-# One prefix mark, one trailing mark, one column; the budget each row was
+# A prefix mark, trailing marks, one column; the budget each row was
 # handed is kept for the assertions.
 oo::class create Marked {
     superclass ::streamtree::StreamTree
@@ -29,7 +29,8 @@ oo::class create Marked {
     constructor {parent} {
         my configure -attrs [list \
             [dict create id pinned glyph ★] \
-            [dict create id running glyph ● place trail]]
+            [dict create id running glyph ● place trail] \
+            [dict create id flagged glyph ◆ place trail]]
         my setup $parent
     }
     method subject_label {} { return "Name" }
@@ -54,6 +55,7 @@ update
 set plain [$t insert "" row p [dict create label "plain" size 1]]
 set run   [$t insert "" row r [dict create label "running" size 2 running 1]]
 set both  [$t insert "" row b [dict create label "both" size 3 running 1 pinned 1]]
+set two   [$t insert "" row w [dict create label "two" size 4 flagged 1 running 1]]
 update
 
 proc row {t id} {
@@ -65,6 +67,7 @@ proc row {t id} {
 check "a row with no mark tabs to the trailing stop empty" "plain\t\t1" [row $t $plain]
 check "a trailing mark sits behind that tab" "running\t●\t2" [row $t $run]
 check "a prefix mark stays ahead of the subject" "★ both\t●\t3" [row $t $both]
+check "trailing marks cluster in declaration order" "two\t●◆\t4" [row $t $two]
 
 # --- The marks keep their attribute tags, and the muted run starts at the
 #     first cell, not at the marks.
@@ -108,6 +111,7 @@ check "an unknown place is refused" 1 [catch {$u configure -attrs [list [dict cr
 check "trail without a glyph is refused" 1 [catch {$u configure -attrs [list [dict create id x place trail]]}]
 check "trail on an enum is refused" 1 [catch {$u configure -attrs [list [dict create id x kind enum glyph ● place trail]]}]
 check "a glyphed bool placed trail is accepted" 0 [catch {$u configure -attrs [list [dict create id x glyph ● place trail]]}]
+check "and so is one placed prefix by name" 0 [catch {$u configure -attrs [list [dict create id x glyph ● place prefix]]}]
 
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails
