@@ -60,7 +60,7 @@ $t batch { lmap id [$t roots] { $t expand $id } }
 Match snippets and badge windows are loose row content, not nodes. They go through a small door that appends inside a node's region and carries that node's end mark forward, along with every ancestor end coincident with it:
 
 - `append_open id` → a temp mark at the node's append point
-- `emit mark text tags` / `emit_window mark args` → insert text or an embedded window
+- `emit mark text tags` / `emit_window mark args` / `emit_image mark args` → insert text, an embedded window or an embedded image
 - `append_close id mark` → advance the marks past what was emitted
 
 ## THE STREAMING CONTRACT
@@ -76,7 +76,7 @@ The widget's defining behaviour: content arriving while the user reads never mov
 
 Every hook has a working default: the base class renders each node's payload `label` (falling back to the node key) as a plain tree with no metadata columns.
 
-Content / layout: `subject_label` (header over the subject column), `column_spec`, `render_subject`, `cell_values`, `cell_tag`, `sort_key`, `subject_sort_id` (the column id a click on the subject header sorts by; the default, `""`, leaves the subject unsortable), `default_sort_dir id` (the direction a freshly adopted sort starts in, `asc` or `desc`; the default is `desc` for every column, and a second click on the active column flips it), `apply_column_tabs tabs` (handed the stops of the columns the current width lays, one per laid column; the default sets them widget-wide, a host whose row tags carry their own `-tabs` configures those tags instead), `relayout_content`. A `cell_values` pair for a column the width has dropped is left out of the row with its stop, so a host lays every column it declares and lets the width decide.
+Content / layout: `subject_label` (header over the subject column), `column_spec`, `row_image id` (the options of the image the row leads with, `-image` and if wanted `-align`, `-padx`, `-pady`; the default, empty, leads with none. The base class lays it as the row's first character on every lay of the row, `item` and `rebuild` included, under the row's tags, and hands `render_subject` a budget less its width, so a host paints a kind icon or a depth guide and never re-lays it: a guide image per depth and line kind, sized to the full line height, draws a tree's hairlines unbroken, with `-offset` on the kind tag placing the text inside the taller line), `render_subject`, `cell_values`, `cell_tag`, `sort_key`, `subject_sort_id` (the column id a click on the subject header sorts by; the default, `""`, leaves the subject unsortable), `default_sort_dir id` (the direction a freshly adopted sort starts in, `asc` or `desc`; the default is `desc` for every column, and a second click on the active column flips it), `apply_column_tabs tabs` (handed the stops a row's tabs take, in row order: the trailing-mark stop when a trail-placed attribute is declared, then one per column the current width lays; the default sets them widget-wide, a host whose row tags carry their own `-tabs` configures those tags instead), `relayout_content`. A `cell_values` pair for a column the width has dropped is left out of the row with its stop, so a host lays every column it declares and lets the width decide.
 
 Row lifecycle (per node kind): `start_gravity`, `row_tags`, `on_node_created` (register domain indices before the row renders), `on_row_rendered` (wire bindings, nested content, selection), `on_before_delete` (drop domain indices), `populate` (called at the top of `expand`; a lazy host enumerates and attaches the node's children here, a materialized tree keeps the no-op default).
 
@@ -145,8 +145,13 @@ The arrows, Home and End are the module's own, walking the drawn rows through th
 ## DECLARATIVE ATTRIBUTES
 
 A consumer declares attributes on its rows: an id, a kind (bool or enum), a
-label, an optional glyph, and whether a reader may filter on it. A glyphed
-bool draws as a subject-prefix mark; a glyphless one as a check-mark column.
+label, an optional glyph and where it sits, and whether a reader may filter on
+it. A glyphed bool draws as a mark in the subject zone, placed `prefix`
+(ahead of the subject, the default) or `trail` (in a cluster right-aligned at
+the zone's end, a gap short of the first metadata cell, the subject ellipsised
+first so the cluster stays whole; declaring one puts a right stop at that end
+on every row and the header, ahead of the column stops); a glyphless one as a
+check-mark column.
 Filter controls build into a frame the host owns (a checkbutton per bool, a
 stay-open combobox-style popdown per enum with select all and none, dismissed by a click outside, Escape, or the window moving); an enum filter is a
 set of excluded values. Values reach the base class only through the attr_value
@@ -168,6 +173,20 @@ Newest release first, one entry per release, each saying what a host gains and
 what an existing subclass has to answer differently when it takes that release.
 The record starts at 0.4.0; anything earlier is in the commit log at the
 module's home repository alone.
+
+**0.9.0.** A row leads with an image a host supplies: the `row_image`
+hook answers the options of one embedded image per row (a kind icon, a
+depth guide), and the base class lays it as the row's first character on
+every lay of the row, under the row's tags, and budgets the subject past
+it, so a host that drew depth with margins can draw it with an image
+instead. `emit_image` lays an embedded image into loose content, beside
+`emit_window`. A glyphed bool attribute takes `place trail` to draw its
+mark right-aligned at the subject zone's end rather than ahead of the
+subject; with one declared, every row and the header tab to a trailing
+stop before their cells, and `apply_column_tabs` is handed that stop ahead
+of the column stops. A subclass answers for nothing: the hook's default
+leads with no image, a row's tag offsets already counted from its text,
+and an attribute without `place` draws where it did.
 
 **0.8.0.** The release the 0.7.0 review deferred to: nine changes to the
 surface a subclass writes against, and one to the bracket every mutation
