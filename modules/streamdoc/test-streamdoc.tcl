@@ -10,7 +10,7 @@ package require Tk
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require streamdoc
+package require -exact streamdoc 1.1a1
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
@@ -195,6 +195,27 @@ check "the autofollow latch keeps the tail in view" 1 \
 $T yview moveto 0
 update
 check "<<LeftBottom>> fires on scrolling away" away $::at
+
+# ---- reveal alignment ------------------------------------------------------
+# From below, `top` puts the target's line on the top edge; in the last
+# screenful it scrolls as far as the widget goes, the target in view.
+$T yview moveto 1
+update
+set idx [at "hidden note A"]
+$d reveal $idx top
+update
+check "reveal top puts the target's line on the top edge" \
+    [$T index "$idx linestart"] [$T index "@0,0 linestart"]
+$T yview moveto 0
+update
+set last [$T index "end-2l linestart"]
+$d reveal $last top
+update
+check "reveal top in the last screenful stops at the end" 1 \
+    [expr {[lindex [$T yview] 1] >= 0.999}]
+check "reveal top in the last screenful shows the target" 1 \
+    [expr {[$T bbox $last] ne ""}]
+check "reveal rejects an unknown align" 1 [catch {$d reveal $idx middle}]
 
 check "audit gate never tripped" 0 [tripped]
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
