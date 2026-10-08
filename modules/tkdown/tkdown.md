@@ -92,7 +92,7 @@ The options, each re-settable through `refit`:
 | `-margin` | `{0 0}` | The host's base margin, `{left right}` or one distance for both, held by `td-margin`. Lists and quotes indent from it, a grid sits at its left edge and spends the width between the two. |
 | `-quotetags` | `{}` | Tags the default quote emitter lays over a whole quote, for the host's ink and inset. |
 | `-image_cmd` | `{}` | A command called with an image's path, returning a Tk image name or `""`. |
-| `-on_block` | `{}` | A command told of each block `body` paints. An empty block, the blank lines between two other blocks, is not reported. |
+| `-on_block` | `{}` | A command told of each block `body` paints. |
 | `-copystyle` | `Copy.TButton` | The ttk style of a grid's copy button, a style the host defines. Until the host defines it, or for any style ttk has no layout for, the module falls back to `TButton`. |
 
 The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic` and `mono`; a missing one is an error. `monobold` is optional and, like any extra key, is kept for the host; nothing in the module draws with it. The heading keys `h1`, `h2` and `h3` are optional, each falling back to `bold`. Levels four through six all paint as `h3`, so a document never asks for a face the host did not size.

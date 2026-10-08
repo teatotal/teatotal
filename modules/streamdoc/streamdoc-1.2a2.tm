@@ -250,7 +250,7 @@ oo::class create ::streamdoc::StreamDoc {
     # that moves the tail - an append, an embedded window realised or grown
     # late, a resize of the text - leaves it held and re-follows on idle. It
     # takes hold through `follow`, or at a batch that finds the view on the
-    # tail. setup and reset both seed it, as with find.
+    # tail.
     method latch_seed {} {
         if {[info exists Latched]} return
         set Latched 0
@@ -319,8 +319,6 @@ oo::class create ::streamdoc::StreamDoc {
     # summary pop or rewind near the tail cannot tug the view. The pin keeps
     # that line's pixel offset too: `yview` on a mark alone would snap a tall
     # line part-scrolled off the top, an embedded table say, to its top edge.
-    # A batch that finds the view on the tail takes the latch; none lets go
-    # of it.
     method anchor_save {} {
         if {[my opt autofollow] && [lindex [$Text yview] 1] >= 0.999} {
             set Latched 1

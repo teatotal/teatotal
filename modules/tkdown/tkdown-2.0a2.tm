@@ -1068,8 +1068,7 @@ proc ::tkdown::ensure_fonts {} {
 # fonts is a dict of Tk font names: body bold italic bolditalic mono are
 # required; h1 h2 h3 are optional heading faces falling back to bold. Extra
 # keys, monobold among them, are kept for the host but nothing here draws
-# with them. The options are those refit
-# re-sets: -margin {left right} (or one n for both) is the host's base margin
+# with them. The options are those refit re-sets: -margin {left right} (or one n for both) is the host's base margin
 # in screen distance, -copystyle the ttk style of a grid's copy button,
 # -quotetags the tags the quote emitter lays over a quote, -image_cmd the
 # command turning an image path into a Tk image, -on_block the command told
@@ -1200,7 +1199,6 @@ proc ::tkdown::unregister {w} {
     dict unset widgets $w
 }
 
-# tags with td-margin added, once.
 proc ::tkdown::with_margin {tags} {
     if {"td-margin" ni $tags} { lappend tags td-margin }
     return $tags
@@ -1340,12 +1338,12 @@ proc ::tkdown::walk {w idx text baseTags em stages} {
 
 # Paint one block by running cmd, then end its line: a prose block always
 # (a prose emitter leaves its last line open), any other only when its
-# emitter left it open. Then -on_block hears {kind start end text}, start
-# the block's first character of content and end just past everything it
+# emitter left it open. Then -on_block hears {kind start end text}: start is
+# the block's first character of content, end just past everything it
 # inserted; the newlines a quote, rule, image or table emitter writes ahead
-# of its content to set it off lie before start. text is the block's text (a table's as GFM, an image's alt, a rule's empty). A
-# prose block of blank lines, the gap between two other blocks, is painted
-# but not reported.
+# of its content to set it off lie before start. text is the block's text (a
+# table's as GFM, an image's alt, a rule's empty). A prose block of blank
+# lines, the gap between two other blocks, is painted but not reported.
 proc ::tkdown::block {w idx kind text baseTags cmd} {
     variable widgets
     variable blockseq
