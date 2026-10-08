@@ -2,6 +2,7 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
+package prefer latest
 package require tkdown
 
 set fails 0
@@ -145,6 +146,229 @@ check list_version_literal \
 check list_none \
     [list [list normal "just a paragraph\nof two lines"]] \
     [::tkdown::segment_lists "just a paragraph\nof two lines"]
+
+# ---- table_to_markdown: a payload back to GFM text that segment_tables reads
+# back to the same payload.
+set payload [dict create align {left center right} rows {{a b c} {d {e | f} g}}]
+check md_delim_and_escape "| a | b | c |\n| --- | :---: | ---: |\n| d | e \\| f | g |" \
+    [::tkdown::table_to_markdown $payload]
+check md_round_trip [list [list table $payload]] \
+    [::tkdown::segment_tables [::tkdown::table_to_markdown $payload]]
+
+# ---- table_colwidths: column widths for a table whose cells wrap. Shapes are
+# in character units (em 1, space 1). The cost is recomputed here from its
+# definition rather than read from the module, so a module whose own cost
+# drifted from the definition fails the property instead of agreeing with
+# itself.
+
+# Lines of one cell at width w under greedy word wrap; a token wider than w
+# starts a line and breaks every w, each break a line and, with pen, one more.
+proc ref_lines {cell w space pen} {
+    set lines 1
+    set used 0
+    set empty 1
+    foreach t $cell {
+        if {$w > 0 && $t > $w} {
+            if {!$empty} { incr lines }
+            set rest $t
+            while {$rest > $w} {
+                set rest [expr {$rest - $w}]
+                incr lines [expr {$pen ? 2 : 1}]
+            }
+            set used $rest
+        } elseif {$empty} {
+            set used $t
+        } elseif {$used + $space + $t <= $w} {
+            set used [expr {$used + $space + $t}]
+        } else {
+            incr lines
+            set used $t
+        }
+        set empty 0
+    }
+    return $lines
+}
+# Each row as tall as its tallest cell, summed; pen 0 gives the height.
+proc ref_cost {rows widths space {pen 1}} {
+    set total 0
+    foreach row $rows {
+        set tallest 1
+        foreach cell $row w $widths {
+            set tallest [expr {max($tallest, [ref_lines $cell $w $space $pen])}]
+        }
+        incr total $tallest
+    }
+    return $total
+}
+proc ref_maxs {rows space} {
+    set maxs [lrepeat [llength [lindex $rows 0]] 0]
+    foreach row $rows {
+        set j 0
+        foreach cell $row {
+            set full [expr {[tcl::mathop::+ 0 {*}$cell]
+                + max(0, [llength $cell] - 1) * $space}]
+            lset maxs $j [expr {max([lindex $maxs $j], $full)}]
+            incr j
+        }
+    }
+    return $maxs
+}
+proc ref_floors {rows avail em} {
+    set ncol [llength [lindex $rows 0]]
+    set cap [expr {min(8 * $em, $avail / $ncol)}]
+    set floors [lrepeat $ncol 0]
+    foreach row $rows {
+        set j 0
+        foreach cell $row {
+            foreach t $cell {
+                lset floors $j [expr {max([lindex $floors $j], min($t, $cap))}]
+            }
+            incr j
+        }
+    }
+    return $floors
+}
+# The in-budget proportional shrink: max-contents scaled to avail, clamped
+# into [floor, max], the remainder given to columns with room, first first.
+proc ref_prop {rows avail em space} {
+    set maxs [ref_maxs $rows $space]
+    set floors [ref_floors $rows $avail $em]
+    set summax [tcl::mathop::+ {*}$maxs]
+    set out [lmap hi $maxs lo $floors {
+        expr {min(max($hi * $avail / $summax, $lo), $hi)}
+    }]
+    set j 0
+    while {[set left [expr {$avail - [tcl::mathop::+ {*}$out]}]] != 0} {
+        set cw [lindex $out $j]
+        if {$left > 0} {
+            lset out $j [expr {min([lindex $maxs $j], $cw + $left)}]
+        } else {
+            lset out $j [expr {max([lindex $floors $j], $cw + $left)}]
+        }
+        incr j
+    }
+    return $out
+}
+# Every way a result can break the contract, as a list of complaints.
+proc colwidths_faults {rows avail em space widths} {
+    set faults [list]
+    set maxs [ref_maxs $rows $space]
+    if {[tcl::mathop::+ {*}$maxs] <= $avail} {
+        if {$widths ne $maxs} { lappend faults "fits but widths $widths not $maxs" }
+        return $faults
+    }
+    if {[tcl::mathop::+ {*}$widths] != $avail} {
+        lappend faults "widths $widths do not sum to $avail"
+    }
+    foreach w $widths lo [ref_floors $rows $avail $em] {
+        if {$w < $lo} { lappend faults "width $w under its floor $lo" }
+    }
+    set c [ref_cost $rows $widths $space]
+    set cp [ref_cost $rows [ref_prop $rows $avail $em $space] $space]
+    if {$c > $cp} { lappend faults "cost $c above the proportional seed's $cp" }
+    return $faults
+}
+proc cw {rows avail} { return [::tkdown::table_colwidths $rows $avail 1 1] }
+
+# The two ends of the contract: max-contents when they fit, floors when even
+# the floors fill avail (here 8 ems caps the long tokens).
+check cw_fits {3 5} [cw {{{3} {2 2}} {{1} {5}}} 20]
+check cw_floors {8 8} [cw {{{20} {30}} {{4} {4 4 4}}} 16]
+
+# Case 1: a short label, a date, and two prose columns; the prose columns
+# take what the fixed ones leave.
+set case1 {
+    {5 4 8 7}
+    {{5 1} 10 {7 4 2 1 5} {6 4 4}}
+    {{5 1} 10 {7 5 9 5 9 4} {5 5 4 3 3 3 2 1 6}}
+    {{5 1} 10 {6 2 3 10 5 4} {6 4 4}}
+    {{5 1} 10 {9 6 1 5 4} {5 5 4}}
+    {{5 1} 10 {5 5 6 6 4 8} {4 6 5}}
+    {{5 1} 10 {5 4 2 6 5 4} {6 4 4}}
+    {{5 1} 10 {3 1 5 6 2 3 6} {4 8}}
+    {{5 1} 10 {5 4} {8 4}}
+    {{5 1} 10 {6 5 1} {6 4 4}}
+    {{5 1} 10 {5 4} {6 4 4}}
+    {{5 1} 10 {3 1 5} {8 4}}
+    {{5 1} 10 {7 4 3 8 8 10} {8 4 10}}
+}
+set w [cw $case1 100]
+check cw_case1_sum 100 [tcl::mathop::+ {*}$w]
+check cw_case1_height 1 [expr {[ref_cost $case1 $w 1 0] <= 15}]
+check cw_case1_contract {} [colwidths_faults $case1 100 1 1 $w]
+set case1_height [ref_cost $case1 $w 1 0]
+
+# Seeded prose: n characters as tokens of 2 to 9.
+proc words {n} {
+    set toks [list]
+    set left $n
+    while {$left > 0} {
+        set t [expr {min($left, 2 + int(rand() * 8))}]
+        lappend toks $t
+        set left [expr {$left - $t - 1}]
+    }
+    return $toks
+}
+
+# Case 2: a fixed-width key beside one long prose column.
+expr {srand(11)}
+set case2 [list {{6} {6}}]
+for {set r 0} {$r < 4} {incr r} {
+    set toks [list]
+    set n [expr {12 + int(rand() * 34)}]
+    for {set k 0} {$k < $n} {incr k} { lappend toks [expr {2 + int(rand() * 8)}] }
+    lappend case2 [list {9} $toks]
+}
+
+# Case 3: a small integer, three prose columns, and a last column that is
+# a digit, sometimes followed by a run of words.
+expr {srand(7)}
+set case3 {{{1} {5 6} {5 6} {5 6} {5}}}
+for {set r 0} {$r < 17} {incr r} {
+    set c5 [expr {rand() < 0.3 ? [concat 1 [words 40]] : {1}}]
+    lappend case3 [list [list [expr {1 + int(rand() * 2)}]] \
+        [words [expr {15 + int(rand() * 120)}]] \
+        [words [expr {15 + int(rand() * 150)}]] \
+        [words [expr {40 + int(rand() * 160)}]] $c5]
+}
+foreach name {case2 case3} {
+    foreach avail {100 70} {
+        set w [cw [set $name] $avail]
+        check cw_${name}_$avail {} [colwidths_faults [set $name] $avail 1 1 $w]
+        if {$avail == 100} { set ${name}_height [ref_cost [set $name] $w 1 0] }
+    }
+}
+puts "heights at avail 100: case1 $case1_height case2 $case2_height case3 $case3_height"
+
+# The corpus: every table at a pane of 100 and of 70 characters, less a
+# two-character gutter per column.
+set f [open [file join [file dirname [info script]] table-shapes.txt]]
+set ntab 0
+set faulted [list]
+set t0 [clock milliseconds]
+while {[gets $f line] >= 0} {
+    if {[string match #* $line]} continue
+    set rows [lindex $line 0]
+    set ncol [llength [lindex $rows 0]]
+    if {$ncol == 0} continue
+    set ragged 0
+    foreach row $rows { if {[llength $row] != $ncol} { set ragged 1 } }
+    if {$ragged} continue
+    foreach pane {100 70} {
+        set avail [expr {$pane - 2 * $ncol}]
+        if {$avail < $ncol} continue
+        incr ntab
+        set w [cw $rows $avail]
+        set faults [colwidths_faults $rows $avail 1 1 $w]
+        if {[llength $faults]} { lappend faulted [list $pane $rows $faults] }
+    }
+}
+close $f
+set ms [expr {[clock milliseconds] - $t0}]
+puts "corpus: $ntab tables in $ms ms"
+foreach x [lrange $faulted 0 4] { puts "  $x" }
+check cw_corpus_faults 0 [llength $faulted]
+check cw_corpus_under_10s 1 [expr {$ms < 10000}]
 
 if {$fails > 0} {
     puts "$fails failures"
