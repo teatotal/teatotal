@@ -120,8 +120,9 @@ pack .body.t -side left -fill both -expand 1
     body DemoBody bold DemoBold italic DemoItalic bolditalic DemoBI \
     mono DemoMono h1 DemoH1 h2 DemoH2 h3 DemoH3]
 
-# Host chrome: the module's td-* tags are font or geometry only, so ink and
-# the quote bar are ordinary tags the host configures and stacks underneath.
+# Host chrome: the module's td-* faces and margins carry no colour, so the
+# host supplies ink: base tags stacked underneath, and the td-* tags it
+# colours itself.
 .body.t tag configure base -foreground #102a43
 .body.t tag configure fence -font DemoMono -background #eef2f6 \
     -lmargin1 18 -lmargin2 18 -rmargin 18 -spacing1 4 -spacing3 4

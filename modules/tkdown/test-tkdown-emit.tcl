@@ -2,10 +2,9 @@
 # The emit half of tkdown: painting parsed markdown onto a Tk text widget.
 #
 # Where test-tkdown-parse.tcl drives the pure parse procs under a bare tclsh,
-# this drives the widget-facing procs - tags, runs, prose, body and its
-# emitters, refit, forget, table_scan, table_spotlight, link_at, link_scan,
-# ensure_fonts - that need Tk: the per-widget registry and its options, the
-# td-* faces, the block walk, and the grid a table renders as.
+# this drives the widget-facing procs that need Tk: the per-widget registry
+# and its options, the td-* faces, the block walk and its emitters, link and
+# table search, and the grid a table renders as.
 # It requires only tkdown and builds its own named fonts, so a pass proves
 # the module stands alone.
 #

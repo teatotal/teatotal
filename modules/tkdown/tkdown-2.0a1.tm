@@ -32,12 +32,10 @@ namespace eval ::tkdown {
 #
 # The parse half (the segment_* splitters and parse_inline) is pure Tcl,
 # needs no Tk, and runs under a bare tclsh. The splitters are layered: each
-# sees a body the ones above it have already peeled. body's walk runs fences
-# first, then quotes, rules, image lines and tables, and paints what is left
-# as prose, whose emitter splits lists and lifts headings itself;
+# sees a body the ones above it have already peeled, in the order body
+# walks them. The prose emitter splits lists and lifts headings itself;
 # segment_headings is for a host that wants a document's headings as
-# segments of its own. Each block kind has a default emitter a host may
-# replace or switch off. The emit half paints onto a widget registered with
+# segments of its own. The emit half paints onto a widget registered with
 # `tags`, and every td-* tag it configures is font-only or geometry-only.
 # Colour always comes from the base tags the host stacks underneath or from
 # td-* tags the host inks, so the module owns faces and layout and the host
@@ -783,7 +781,7 @@ proc ::tkdown::segment_lists {text} {
 proc ::tkdown::parse_inline {text} {
     # Escapes go to private-use sentinels so the marker scans never meet them;
     # any stray sentinel in the raw input is dropped first. Links are lifted
-    # out to a fourth sentinel before the emphasis scan (inline_links).
+    # out to a sentinel of their own before the emphasis scan.
     set bt \uE000 ;# escaped backtick  -> literal `
     set st \uE001 ;# escaped asterisk  -> literal *
     set bs \uE002 ;# escaped backslash -> literal backslash
@@ -1106,8 +1104,7 @@ proc ::tkdown::tags {w fonts args} {
     $w tag configure td-italic     -font [dict get $fonts italic]
     $w tag configure td-bolditalic -font [dict get $fonts bolditalic]
     $w tag configure td-code       -font [dict get $fonts mono]
-    # A rule is one line of a face two pixels tall; its ink is td-rule's
-    # -background, which the host sets.
+    # A rule is one line of a face two pixels tall.
     if {"TdRule" ni [font names]} {
         font create TdRule -size -2 \
             -family [font actual [dict get $fonts body] -family]
@@ -1163,7 +1160,7 @@ proc ::tkdown::options {w reg opts} {
 # The geometry tags, offset from the host's margin. A list item at depth d
 # carries td-list and td-list<d>: the marker sits 10 px in plus 18 px a
 # level, and the item text (and any wrapped continuation) 20 px past that.
-# td-quote insets a quote block past its bar. A grid sits at the margin
+# td-quote insets a quote block, bar included. A grid sits at the margin
 # itself, and its width is capped by both margins.
 proc ::tkdown::margins {w} {
     ::tkdown::list_indent $w td-list 0
@@ -1356,9 +1353,9 @@ proc ::tkdown::insert_at {w idx} {
 # Re-set any of tags' options, then bring the pane up to date with them:
 # margins re-derived, copy buttons restyled, tables whose window has gone
 # from the text dropped, and every built grid re-fitted on the next idle
-# pass. A resize or a reading-font change needs only the re-fit, which the
-# pane's <Configure> already schedules; a host calls refit after a font
-# change or to change an option.
+# pass. A resize needs only the re-fit, which the pane's <Configure>
+# schedules by itself; a host calls refit after a font change or to change
+# an option.
 proc ::tkdown::refit {w args} {
     variable widgets
     if {![dict exists $widgets $w]} return
@@ -1398,7 +1395,7 @@ proc ::tkdown::refit_run {w} {
 # delete every td-link<N> tag, empty both registries. A `delete 1.0 end`
 # alone would leave the marks behind, piled at 1.0 across reloads.
 # Registration survives; call before a re-render. Table and link numbers
-# carry on rather than start again, so a number never names two things.
+# are not reset, so a number never names two things.
 proc ::tkdown::forget {w} {
     variable widgets
     if {![dict exists $widgets $w]} return
@@ -1651,9 +1648,6 @@ proc ::tkdown::table_realize {w id} {
             ::tkdown::table_fill_cell $c $fonts [lindex $row $j] \
                 [expr {$r == 0}] [lindex $align $j]
             grid $c -row $r -column $j -sticky nsew -padx 1 -pady 1
-            # A cell's height follows its width: whenever grid hands it one
-            # (first map, a re-fit, a font change), -height is resynced to
-            # the wrapped line count.
             bind $c <Configure> [list ::tkdown::table_cell_height $c]
             lappend cells $c
         }
@@ -1773,8 +1767,7 @@ proc ::tkdown::table_hover_check {w x} {
 }
 
 # The copy button's action: the table as GFM onto the clipboard, the
-# embedded window's text being out of reach of a drag-selection. The button
-# shows ✓ for 700 ms.
+# embedded window's text being out of reach of a drag-selection.
 proc ::tkdown::table_copy {w id} {
     variable widgets
     if {![dict exists $widgets $w tables $id]} return
@@ -1803,7 +1796,7 @@ proc ::tkdown::table_copy_reset {w id} {
 # cell's own padding; table_colwidths turns the cells' measured words into
 # column widths, pinned as grid minsizes. The cells' <Configure> bindings
 # turn the new widths into wrapped heights. Words are measured afresh on
-# every fit, so a font change re-fits with nothing else to do.
+# every fit, so a refit after a font change sees the new faces.
 proc ::tkdown::table_fit {w id} {
     variable widgets
     if {![dict exists $widgets $w tables $id]} return
@@ -1941,7 +1934,7 @@ proc ::tkdown::mark_order {w a b} {
 # Light the table whose mark sits at idx and put out the one lit before;
 # any other idx, "" included, only puts it out. A lit grid's frame takes
 # td-spot's background, so the gridlines and border read as the hit. The
-# flag is set before the grid exists, so a reveal that scrolls a table into
+# flag is set before the grid exists, so a jump that scrolls a table into
 # view for the first time builds it lit.
 proc ::tkdown::table_spotlight {w idx} {
     variable widgets
