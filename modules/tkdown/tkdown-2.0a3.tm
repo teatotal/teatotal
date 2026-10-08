@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.0a2
+package provide tkdown 2.0a3
 
 namespace eval ::tkdown {
     namespace export parse_inline segment_code_fences segment_blockquotes \
@@ -706,8 +706,9 @@ proc ::tkdown::list_marker {line} {
 # source order, each {depth marker text} as list_marker reads it). A list is
 # a run of item lines and the lines that belong to them:
 #   - a non-blank line that is not itself a marker, directly under an item or
-#     under that item's earlier continuation, joins the item's text after one
-#     space, its own indentation dropped (lazy continuation);
+#     under that item's earlier continuation, joins the item's text on a line
+#     of its own, "\n" between, its own indentation dropped (lazy
+#     continuation);
 #   - blank lines followed by another marker, at any depth, are dropped and
 #     the list goes on; blank lines followed by anything else end it and stay
 #     in the normal text that follows;
@@ -738,7 +739,7 @@ proc ::tkdown::segment_lists {text} {
                 set more [string trim $line]
                 if {$more ne ""} {
                     set have [lindex $items end 2]
-                    lset items end 2 [expr {$have eq "" ? $more : "$have $more"}]
+                    lset items end 2 [expr {$have eq "" ? $more : "$have\n$more"}]
                     continue
                 }
                 set j $i
@@ -1165,8 +1166,12 @@ proc ::tkdown::options {w reg opts} {
 # td-* ones below, wins where it stacks. A list item at depth d
 # carries td-list and td-list<d>: the marker sits 10 px in plus 18 px a
 # level, and the item text (and any wrapped continuation) 20 px past that.
-# td-quote insets a quote block, bar included. A grid sits at the margin
-# itself, and its width is capped by both margins.
+# A line an item continues on carries td-listc<d> as well, which sets both
+# margins at the item text. td-quote insets a quote block, bar included. A
+# grid sits at the margin itself, and its width is capped by both margins.
+# td-rule zeroes the line spacing and is raised over the base tags, so a
+# base tag's -spacing1/-spacing3 cannot widen the rule's line, which would
+# take td-rule's -background: the bar is the face's two pixels alone.
 proc ::tkdown::margins {w} {
     ::tkdown::list_indent $w td-list 0
     foreach tag [$w tag names] {
@@ -1180,13 +1185,23 @@ proc ::tkdown::margins {w} {
     $w tag configure td-quote -lmargin1 [expr {$l + 14}] \
         -lmargin2 [expr {$l + 14}] -rmargin $r
     $w tag configure td-tblwin -lmargin1 $l -lmargin2 $l -rmargin $r
+    $w tag configure td-rule -spacing1 0 -spacing2 0 -spacing3 0
+    $w tag raise td-rule
 }
 
+# Configure a list tag for depth; for td-list<d>, td-listc<d> too, kept just
+# above it so its lmargin1 wins on a continued line.
 proc ::tkdown::list_indent {w tag depth} {
     lassign [dict get [set ::tkdown::widgets] $w margin] l r
     set mark [expr {$l + 10 + 18 * $depth}]
-    $w tag configure $tag -lmargin1 $mark -lmargin2 [expr {$mark + 20}] \
-        -tabs [expr {$mark + 20}] -rmargin $r
+    set text [expr {$mark + 20}]
+    $w tag configure $tag -lmargin1 $mark -lmargin2 $text -tabs $text \
+        -rmargin $r
+    if {$tag ne "td-list"} {
+        $w tag configure td-listc$depth -lmargin1 $text -lmargin2 $text \
+            -rmargin $r
+        $w tag raise td-listc$depth $tag
+    }
 }
 
 # Drop the widget from the registry, its grids and their bindings with it.
@@ -1420,9 +1435,9 @@ proc ::tkdown::refit_run {w} {
 
 # Drop w's tables and links: destroy every grid, unset every tbl#m<N> mark,
 # delete every td-link<N> tag, empty both registries. A `delete 1.0 end`
-# alone would leave the marks behind, piled at 1.0 across reloads.
-# Registration survives; call before a re-render. Table and link numbers
-# are not reset, so a number never names two things.
+# alone leaves the link tags behind, and an unbuilt table's mark until the
+# next prune. Registration survives; call before a re-render. Table and
+# link numbers are not reset, so a number never names two things.
 proc ::tkdown::forget {w} {
     variable widgets
     if {![dict exists $widgets $w]} return
@@ -1545,8 +1560,9 @@ proc ::tkdown::emit_prose {w idx text baseTags} {
 # Emit one parsed list as consecutive logical lines, each item under td-list
 # and td-list<depth>, its hanging indent: the marker, then a tab, then the
 # item text through the inline-run path, so markdown inside an item still
-# styles. An item deeper than one level below the item before it is drawn
-# one level below it.
+# styles. Each line the item's text continues on adds td-listc<depth>, so it
+# starts where the item text does. An item deeper than one level below the
+# item before it is drawn one level below it.
 proc ::tkdown::emit_list {w idx items baseTags} {
     set prev -1
     set tags {}
@@ -1560,8 +1576,14 @@ proc ::tkdown::emit_list {w idx items baseTags} {
         }
         set tags [concat $baseTags [list td-list td-list$depth]]
         $w insert $idx "$marker\t" $tags
+        $w mark set td#item [::tkdown::insert_at $w $idx]
+        $w mark gravity td#item left
         ::tkdown::runs $w $idx $text $tags
+        set from [$w index "td#item +1 line linestart"]
+        set at [::tkdown::insert_at $w $idx]
+        if {[$w compare $from < $at]} { $w tag add td-listc$depth $from $at }
     }
+    $w mark unset td#item
 }
 
 # The default code emitter: the text verbatim under codeTags, its line ended.
@@ -1610,9 +1632,11 @@ proc ::tkdown::emit_image {w idx alt path baseTags} {
 
 # The default rule emitter: one line holding a space under td-rule, the
 # two-pixel face, so the host's td-rule -background draws a thin bar across
-# the pane.
+# the pane. td-rule is raised again here, over any base tag created since
+# tags or refit, so its face and zero spacing win.
 proc ::tkdown::emit_rule {w idx baseTags} {
     $w insert $idx " \n" [concat $baseTags [list td-rule]]
+    $w tag raise td-rule
 }
 
 # ---- the grid ------------------------------------------------------------
@@ -1916,19 +1940,27 @@ proc ::tkdown::table_cell_height {c} {
 }
 
 # A grid's <Destroy>, whether by forget or by its window character being
-# deleted: the table leaves the registry. Its mark stays until forget.
+# deleted: the table leaves the registry and its mark is unset. The text may
+# be partway through deleting the window character, so the mark goes on the
+# next idle pass rather than from inside the delete.
 proc ::tkdown::table_destroyed {w id x} {
     variable widgets
     if {![dict exists $widgets $w tables $id]} return
     if {[dict get $widgets $w tables $id frame] ne $x} return
     after cancel [dict get $widgets $w tables $id fbtok]
+    after idle [list ::tkdown::mark_unset $w \
+        [dict get $widgets $w tables $id mark]]
     dict unset widgets $w tables $id
     if {[dict get $widgets $w spot] eq $id} { dict set widgets $w spot "" }
 }
 
-# Drop the tables whose mark no longer sits on their window character: the
-# text holding them was deleted before the grid was ever built, so no
-# <Destroy> came to say so.
+proc ::tkdown::mark_unset {w m} {
+    if {[winfo exists $w]} { $w mark unset $m }
+}
+
+# Drop the tables whose mark no longer sits on their window character, the
+# mark unset with them: the text holding them was deleted before the grid
+# was ever built, so no <Destroy> came to say so.
 proc ::tkdown::table_prune {w} {
     variable widgets
     dict for {id t} [dict get $widgets $w tables] {

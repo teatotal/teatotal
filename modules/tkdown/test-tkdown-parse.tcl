@@ -2,7 +2,7 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.0a2
+package require -exact tkdown 2.0a3
 
 set fails 0
 proc check {name expected actual} {
@@ -290,13 +290,13 @@ check list_indented_start \
     [list [list list {{1 • nested}}]] \
     [::tkdown::segment_lists "  - nested"]
 check list_lazy \
-    [list [list list {{0 • {one runs on}} {0 • two}}]] \
+    [list [list list [list [list 0 • "one\nruns on"] {0 • two}]]] \
     [::tkdown::segment_lists "- one\nruns on\n- two"]
 check list_indented_continuation \
-    [list [list list {{0 1. {first and more}} {1 • {sub tail}}}]] \
+    [list [list list [list [list 0 1. "first\nand more"] [list 1 • "sub\ntail"]]]] \
     [::tkdown::segment_lists "1. first\n   and more\n   - sub\n     tail"]
 check list_lazy_after_last \
-    [list [list list {{0 • a} {0 • {b outro}}}]] \
+    [list [list list [list {0 • a} [list 0 • "b\noutro"]]]] \
     [::tkdown::segment_lists "- a\n- b\noutro"]
 check list_blank_continues \
     [list [list list {{0 • a} {1 • b} {0 • c}}]] \

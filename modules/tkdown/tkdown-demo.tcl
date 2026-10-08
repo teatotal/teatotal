@@ -17,7 +17,7 @@ package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
 foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.0a2
+package require -exact tkdown 2.0a3
 
 # The host owns the fonts: tkdown binds its faces onto names the host has
 # already created and sized, which is what lets one spinbox re-size the lot.

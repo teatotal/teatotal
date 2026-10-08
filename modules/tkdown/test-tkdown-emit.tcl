@@ -19,7 +19,7 @@ package require Tk
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.0a2
+package require -exact tkdown 2.0a3
 
 set fails 0
 proc check {name got want} {
@@ -425,10 +425,16 @@ check "only the visible table is built" \
     [list [winfo exists $G.tbl7] [winfo exists $G.tbl8]] {1 0}
 $G delete 1.0 end
 update
+check "the built table's <Destroy> unset its mark" [tblmarks $G] tbl#m8
 check "table_scan finds nothing once the text is gone" \
     [::tkdown::table_scan $G apple 1] {}
 check "and the registry is empty" [dict get [reg $G] tables] {}
 check "the built frame went with its window" [winfo exists $G.tbl7] 0
+check "the prune unset the unbuilt table's mark" [tblmarks $G] {}
+::tkdown::body $G end $TBL base code
+$G delete 1.0 end
+::tkdown::refit $G
+check "refit's prune unsets a mark too" [tblmarks $G] {}
 ::tkdown::forget $G
 
 # A pane destroyed while it holds a built grid unregisters cleanly.
@@ -555,6 +561,17 @@ check "and the base tags and td-margin" \
     [lsort [.x tag names [lindex [.x tag ranges td-rule] 0]]] {base td-margin td-rule}
 check "td-rule's face is TdRule, two pixels" \
     [list [.x tag cget td-rule -font] [font configure TdRule -size]] {TdRule -2}
+# A base tag spacing its lines, created after tags, cannot widen the rule.
+.x tag configure spaced -spacing1 4 -spacing3 6
+.x delete 1.0 end
+::tkdown::body .x end "para\n\n---\n\nmore" spaced code
+pack .x
+update
+set ri [lindex [.x tag ranges td-rule] 0]
+check "a rule's line is the rule face's height under a spaced base tag" \
+    [expr {abs([lindex [.x dlineinfo $ri] 3] \
+        - [font metrics TdRule -linespace]) <= 1}] 1
+pack forget .x
 .x delete 1.0 end
 ::tkdown::body .x end "Title\n---\nbody\n\nBig\n===" base code
 check "a line over --- paints as h2" [tagtext .x td-h2] Title
@@ -635,6 +652,22 @@ check "refit moves every depth with the margin" \
 check "a nested item's text still styles" \
     [catch {::tkdown::body .n end "- x\n  - **y**" base code}] 0
 check "inside it" [tagtext .n td-bold] y
+
+# A continued item keeps its line break, the continuation at the item text.
+text .lc -width 40
+::tkdown::tags .lc $FA -margin 6
+pack .lc
+::tkdown::body .lc end "- first line\nlazy line\n  - sub\n    indented line" base code
+update
+check "a continuation keeps its line break" [.lc get 1.0 5.0] \
+    "•\tfirst line\nlazy line\n•\tsub\nindented line\n"
+check "a continued line starts at the item text's x" \
+    [expr {[lindex [.lc bbox 2.0] 0] == [lindex [.lc bbox 1.2] 0]}] 1
+check "and a nested one at its own item's" \
+    [expr {[lindex [.lc bbox 4.0] 0] == [lindex [.lc bbox 3.2] 0]}] 1
+check "the continued line is still the item's" \
+    [lsearch -inline -regexp [.lc tag names 4.0] {^td-list\d+$}] td-list1
+pack forget .lc
 
 # ---- 19. td-margin --------------------------------------------------------------
 # A host tag with a margin of its own, configured before tags is called.
