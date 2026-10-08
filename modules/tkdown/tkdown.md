@@ -25,7 +25,7 @@ The parse half is pure Tcl and needs no Tk, so it runs under a bare `tclsh`; the
 
 ## THE HOST OWNS THE CHROME
 
-Every `td-*` tag is either font-only or geometry-only, never coloured. The module owns the faces: it configures `td-bold`, `td-italic`, `td-code`, and the heading levels, each carrying nothing but a `-font`. The two geometry tags carry layout and no font: a table's `td-tbl<N>` tag carries its tab stops and the module's fixed table geometry, and `td-list` the list hanging indent. Colour and selection stay the host's everywhere. A caller passes its own base tags into every emit call, and each styled span stacks the module's face over those base tags, so only the typeface changes and the host's ink and layout hold underneath.
+Every `td-*` tag is either font-only or geometry-only, never coloured. The module owns the faces: it configures `td-bold`, `td-italic`, `td-code`, and the heading levels, each carrying nothing but a `-font`. The geometry tags carry layout and no font: `td-list` the list hanging indent, and `td-tblwin` the margins of the character holding a table's grid, both set from the margin the host names with `-margin`. Colour and selection stay the host's everywhere, a table's included: the host configures `td-grid` with the `-background` its gridlines take and `td-spot` with the one a spotlit table takes, and the module reads them; neither tag is ever laid on text. A caller passes its own base tags into every emit call, and each styled span stacks the module's face over those base tags, so only the typeface changes and the host's ink and layout hold underneath.
 
 That split is why the host, not the module, configures the fonts. `tags` takes a dict of Tk font names the host has already created to match its own reading font, and the module simply binds those names onto its faces. A code block goes in one step further: `body` inserts it under a `codeTags` name the host passes outright, because a code block's margins and background are host chrome, not a tkdown face.
 
@@ -49,22 +49,40 @@ Each emit call inserts at an index the caller advances, a mark or `end`, paintin
 
 | Proc | Arguments | Purpose |
 |---|---|---|
-| `tags` | `w fonts` | Register a text widget: configure its `td-*` faces from the fonts dict and open its table registry. Call once per widget before painting. |
+| `tags` | `w fonts ?option value ...?` | Register a text widget: configure its `td-*` faces from the fonts dict, take the options below, and open its table registry. Call once per widget before painting. |
 | `runs` | `w idx text baseTags` | Insert one prose run's inline spans at `idx`. |
 | `prose` | `w idx text baseTags {suffix "\n\n"}` | Insert prose plus GFM pipe tables, ATX headings, and flat lists, closed by `suffix`. |
 | `body` | `w idx text baseTags codeTags` | Insert a fenced body: prose segments through `prose`, fenced code verbatim under `codeTags`. |
-| `refit` | `w` | Recompute the tab stops of every rendered table under the current fonts. |
-| `forget` | `w` | Drop the widget's rendered tables before a full re-render. |
+| `refit` | `w ?option value ...?` | Re-set any option, re-derive the margins, and re-fit every built grid. |
+| `forget` | `w` | Destroy the widget's grids and unset their marks before a full re-render. |
+| `unregister` | `w` | Drop the widget from the registry, its grids with it; runs on the widget's `<Destroy>`. |
+| `table_scan` | `w needle nocase` | Search the tables' cell text: `{mark excerpt}` per matching table, in document order. |
+| `table_spotlight` | `w idx` | Light the table whose mark is at `idx` and put out the one lit before; `""` puts it out. |
+
+The options, each re-settable through `refit`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `-margin` | `{0 0}` | The host's base margin, `{left right}` or one distance for both. `td-list` indents from it, a grid sits at its left edge and spends the width between the two. |
+| `-copystyle` | `Copy.TButton` | The ttk style of a grid's copy button. A style ttk has no layout for falls back to `TButton`. |
 
 The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic`, and `mono`; a missing one is an error, and extra keys are kept but nothing draws with them. The heading keys `h1`, `h2`, and `h3` are optional, each falling back to `bold` when the host leaves it out. ATX heading lines map by their marker count, and four through six `#` all clamp to `h3`, so a document never asks for a face the host did not size.
 
-A flat list renders as one logical line per item: a marker, a tab, then the item text through the inline-run path so markdown inside an item still styles. The marker is a `•` bullet for an unordered item or the item's own number and a dot for an ordered one (`3. ` renders `3.`, the source numbering preserved rather than renumbered). The whole list carries `td-list`, a hanging indent that sets the marker at the left margin and lands the item text, and any line it wraps to, at the tab stop past it; the tag is geometry only, so colour still comes from the base tags.
+A flat list renders as one logical line per item: a marker, a tab, then the item text through the inline-run path so markdown inside an item still styles. The marker is a `•` bullet for an unordered item or the item's own number and a dot for an ordered one (`3. ` renders `3.`, the source numbering preserved rather than renumbered). The whole list carries `td-list`, a hanging indent that sets the marker just inside the host's margin and lands the item text, and any line it wraps to, at the tab stop past it; the tag is geometry only, so colour still comes from the base tags.
 
 ## THE TABLE AND REFIT LIFECYCLE
 
-A pipe table renders as tab-aligned columns rather than a grid. Each table gets its own `td-tbl<N>` tag carrying the computed `-tabs`, so two tables on one widget never share column geometry, and `-wrap none`, so a row wider than the pane clips at the right edge instead of wrapping and breaking the columns. Header cells also carry `td-head` for bold. The column widths come from measuring each cell's content in the font it will paint in, the header measured bold, and the stops honour the delimiter's per-column left, right, or centre alignment. Column zero anchors at the left margin, so a delimiter asking right or centre there falls back to left; the stops are floored to stay strictly increasing, which Tk requires of a tab spec.
+A pipe table renders as a grid: one embedded window in the text, a frame of gridded `text` cells that wrap their words. A table wider than the pane keeps its columns and folds its long cells onto more lines, so nothing runs past the right edge. Cells take their font from the fonts dict, the header row bold throughout, and inline markdown inside a cell still styles; each column honours the delimiter's left, right, or centre alignment. A cell's background and cursor are the text widget's, its ink comes from the first base tag carrying a `-foreground` (the widget's own foreground otherwise), and the frame showing through between the cells is the gridline colour, `td-grid`'s `-background` or the widget's foreground when the host configured none.
 
-The stops depend on the font, not the pane width, so a resize needs no recompute but a reading-font change does: the host calls `refit` and every rendered table recomputes its stops from the payload the registry kept at render time. Before a full re-render, the host calls `forget`: the `td-tbl<N>` tags survive a `delete 1.0 end` as configured-but-empty tags and would pile up across reloads, so `forget` drops them along with the retained payloads. Registration itself survives, and the registry entry dies with the widget.
+The window builds itself only when the text first shows it, so a long document costs no widgets until the reader reaches its tables. What search and spotlight need is recorded when the table is painted: the payload, the cells' text as the reader sees it, and a left-gravity mark `tbl#m<N>` on the window character. That character carries `td-tblwin` and the base tags, so a host's fold or elide tag reaches the table like any other text, and it is followed by a blank line under the base tags.
+
+Column widths are fitted to the pane: the room is the widget's inner width less both margins and each column's gridlines and cell padding, every cell's words are measured in the face they paint in, and `table_colwidths` divides the room. A table that fits keeps its natural widths and does not stretch to the pane. Each cell's height follows the width it is given. A grid is fitted once it is built and again, on the next idle pass, whenever the widget is resized or the host calls `refit`; a reading-font change needs `refit`, because the words are measured afresh on every fit.
+
+Under the pointer a grid shows a copy button at its top-right, `-copystyle`'s ttk style, which copies the table to the clipboard as GFM text and shows a tick for a moment; a drag-selection cannot reach into an embedded window, so this is how a reader copies a table. The mouse wheel over a grid scrolls the text widget, with the delta it arrived with.
+
+A text search cannot see into an embedded window either, so the module searches for the host. `table_scan` returns `{mark excerpt}` for each table holding the needle, in document order, the excerpt being the first matching cell's text. The mark is an index like any other: a host's find bar can scroll to it, and `table_spotlight` with the same index paints that table's gridlines in `td-spot`'s `-background`, putting out the table lit before. The spotlight takes effect before the table is built, so a jump that scrolls a table into view for the first time shows it lit.
+
+Before a full re-render, the host calls `forget`: it destroys every grid, unsets every `tbl#m<N>` mark, and empties the registry, so table ids start again from one. A `delete 1.0 end` alone destroys the built grids along with their window characters, and `refit`, `table_scan` and `forget` each drop the record of any table whose window character is gone, but the marks of built grids stay until `forget`. Registration survives `forget`; the registry entry dies with the widget.
 
 ## LIMITS
 

@@ -2,12 +2,17 @@
 # The emit half of tkdown: painting parsed markdown onto a Tk text widget.
 #
 # Where test-tkdown-parse.tcl drives the pure parse procs under a bare tclsh,
-# this drives the widget-facing procs - tags, runs, prose, refit, forget - that
-# need Tk: the per-widget font registry, the td-* faces, and the per-table
-# td-tbl<N> tab geometry. It requires only tkdown and
-# builds its own named fonts, so a pass proves the module stands alone.
+# this drives the widget-facing procs - tags, runs, prose, body, refit,
+# forget, table_scan, table_spotlight - that need Tk: the per-widget
+# registry and its options, the td-* faces, and the grid a table renders as.
+# It requires only tkdown and builds its own named fonts, so a pass proves
+# the module stands alone.
 #
-# Runs under wish (it builds text widgets): DISPLAY=:99 wish9.0 test-tkdown-emit.tcl
+# Runs under wish (it builds and maps widgets):
+#   timeout 120 xvfb-run -a wish9.0 test-tkdown-emit.tcl
+
+# A background error would otherwise sit in a dialog and hold the run open.
+proc bgerror {m} { puts "BGERROR: $m"; exit 2 }
 
 package require Tcl 9
 package require Tk
@@ -30,8 +35,7 @@ proc check {name got want} {
 }
 
 # A named-font set the fonts dict needs, one Tk font per required key plus the
-# optional headings left out (so the h1-h3 fallback is exercised). The mono
-# faces are wider than body so a table's columns measure apart.
+# optional headings left out (so the h1-h3 fallback is exercised).
 proc mkfonts {prefix size} {
     font create ${prefix}body       -family Courier -size $size
     font create ${prefix}bold       -family Courier -size $size -weight bold
@@ -43,16 +47,8 @@ proc mkfonts {prefix size} {
         mono ${prefix}mono]
 }
 set FA [mkfonts fa- 10]   ;# default set
-set FB [mkfonts fb- 22]   ;# a second, larger set for the crosstalk widget
-set FC [mkfonts fc- 10]   ;# an isolated set the refit test mutates
+set FC [mkfonts fc- 10]   ;# an isolated set the font-change test mutates
 
-# The alignment tokens out of a -tabs spec ({pos align pos align ...}).
-proc tab_align {tabs} { set a {}; foreach {x al} $tabs { lappend a $al }; return $a }
-proc strictly_up {tabs} {
-    set prev -1
-    foreach {x a} $tabs { if {$x <= $prev} { return 0 }; set prev $x }
-    return 1
-}
 # Concatenated text of every range a tag covers.
 proc tagtext {w tag} {
     set s ""
@@ -93,19 +89,7 @@ check "an emphasis span still stacks the base tag" \
 check "td-italic covers the italic word" [tagtext .r td-italic] "aside"
 check "td-bolditalic covers the bolditalic word" [tagtext .r td-bolditalic] "both"
 
-# ---- 3. prose: a pipe table's geometry, header face, and headings ------------
-text .t
-::tkdown::tags .t $FA
-::tkdown::prose .t end $TBL base ""
-set tag td-tbl1
-check "the table renders under its own td-tbl1 tag" \
-    [expr {[llength [.t tag ranges $tag]] > 0}] 1
-set tabs [.t tag cget $tag -tabs]
-check "the tab stops are strictly increasing" [strictly_up $tabs] 1
-check "a right-aligned column yields a right tab stop" \
-    [expr {"right" in [tab_align $tabs]}] 1
-check "td-head covers the header cells only" [tagtext .t td-head] "NameQtyPrice"
-
+# ---- 3. prose: headings -----------------------------------------------------
 text .h
 ::tkdown::tags .h $FA
 ::tkdown::prose .h end "# Alpha\n## Beta\n#### Delta" base ""
@@ -125,48 +109,25 @@ set para [.p1 get 1.0 "end-1c"]
 set tail [string range [.p2 get 1.0 "end-1c"] [string length "A Heading\n"] end]
 check "the plain paragraph renders identically with a heading above it" $tail $para
 
-# ---- 4. refit: a font-size change recomputes the stops -----------------------
-text .f
-::tkdown::tags .f $FC
-::tkdown::prose .f end $TBL base ""
-set before [.f tag cget td-tbl1 -tabs]
-font configure fc-body -size 30
-font configure fc-bold -size 30
-::tkdown::refit .f
-set after [.f tag cget td-tbl1 -tabs]
-check "refit changed the stops after the font grew" [expr {$before ne $after}] 1
-check "the refitted stops are still strictly increasing" [strictly_up $after] 1
+# ---- 4. options: parsing, defaults, margins ----------------------------------
+text .o
+::tkdown::tags .o $FA
+check "-margin defaults to {0 0}" [dict get [reg .o] margin] {0 0}
+check "-copystyle defaults to Copy.TButton" [dict get [reg .o] copystyle] Copy.TButton
+check "td-tblwin sits at the margin" [.o tag cget td-tblwin -lmargin1] 0
+::tkdown::tags .o $FA -margin 12 -quotetags {q ink} -image_cmd img -on_block blk
+check "one -margin distance serves both sides" [dict get [reg .o] margin] {12 12}
+check "-quotetags is stored" [dict get [reg .o] quotetags] {q ink}
+check "-image_cmd is stored" [dict get [reg .o] image_cmd] img
+check "-on_block is stored" [dict get [reg .o] on_block] blk
+check "td-list's hanging indent is offset from the margin" \
+    [list [.o tag cget td-list -lmargin1] [.o tag cget td-list -lmargin2]] {22 42}
+check "td-tblwin follows the margin" \
+    [list [.o tag cget td-tblwin -lmargin1] [.o tag cget td-tblwin -rmargin]] {12 12}
+check "an unknown option errors" [catch {::tkdown::tags .o $FA -bogus 1}] 1
+check "an option without a value errors" [catch {::tkdown::refit .o -margin}] 1
 
-# ---- 5. forget: tables dropped, a fresh render stays clean -------------------
-::tkdown::forget .t
-check "no td-tbl* tag survives forget" \
-    [expr {[llength [lsearch -all -glob [.t tag names] td-tbl*]]}] 0
-check "the registry's table store is empty" [dict get [reg .t] tables] ""
-.t delete 1.0 end
-::tkdown::prose .t end $TBL base ""
-check "a fresh table re-uses td-tbl1 (nextid reset)" \
-    [expr {[llength [.t tag ranges td-tbl1]] > 0}] 1
-check "the fresh table's stops are strictly increasing" \
-    [strictly_up [.t tag cget td-tbl1 -tabs]] 1
-
-# ---- 6. two registered widgets keep separate fonts and table ids ------------
-text .w1
-text .w2
-::tkdown::tags .w1 $FA
-::tkdown::tags .w2 $FB
-::tkdown::prose .w1 end "$TBL\n\n$TBL" base ""   ;# two tables -> ids 1 and 2
-::tkdown::prose .w2 end $TBL base ""             ;# one table  -> id 1
-check "widget 1 counted two tables" [dict get [reg .w1] nextid] 2
-check "widget 2's id counter is independent" [dict get [reg .w2] nextid] 1
-check "each widget kept its own fonts dict" \
-    [expr {[dict get [reg .w1] fonts] ne [dict get [reg .w2] fonts]}] 1
-check "the larger font produced different stops (no shared geometry)" \
-    [expr {[.w1 tag cget td-tbl1 -tabs] ne [.w2 tag cget td-tbl1 -tabs]}] 1
-::tkdown::forget .w1
-check "forgetting widget 1 left widget 2's table intact" \
-    [expr {[llength [.w2 tag ranges td-tbl1]] > 0}] 1
-
-# ---- 7. destroying a registered widget, then re-registering the path --------
+# ---- 5. destroying a registered widget, then re-registering the path --------
 text .g
 ::tkdown::tags .g $FA
 destroy .g   ;# <Destroy> unregisters it
@@ -176,7 +137,7 @@ check "tags on a fresh widget of the same path succeeds" \
 check "the re-registered widget configures its faces" \
     [.g tag cget td-bold -font] [dict get $FA bold]
 
-# ---- 8. lists: td-list ranges, hanging indent, ordered numbering -------------
+# ---- 6. lists: td-list ranges, hanging indent, ordered numbering -------------
 text .l
 ::tkdown::tags .l $FA
 check "td-list has lmargin1 shallower than lmargin2 (hanging indent)" \
@@ -218,6 +179,265 @@ text .l5
 ::tkdown::prose .l5 end "compute 3 * 4 then done" base ""
 check "marker-like mid-line text carries no td-list" \
     [expr {[llength [.l5 tag ranges td-list]]}] 0
+
+# ---- 7. the grid: a table is one embedded window ----------------------------
+# A mapped pane of a known size in a toplevel of its own, so windows
+# realise and fits have a width.
+proc pane {name args} {
+    toplevel .$name
+    frame .$name.f -width 600 -height 400
+    pack propagate .$name.f 0
+    pack .$name.f
+    text .$name.f.t -wrap word {*}$args
+    pack .$name.f.t -fill both -expand 1
+    return .$name.f.t
+}
+set G [pane grid -padx 6 -borderwidth 1]
+::tkdown::tags $G $FA
+$G tag configure base -foreground #123456
+$G tag configure td-grid -background #aaaaaa
+$G tag configure td-spot -background #ffee00
+
+# The pane's inner width less the margins: what the fit may spend.
+proc inner {w} {
+    expr {[winfo width $w] - 2 * ([$w cget -borderwidth] \
+        + [$w cget -highlightthickness] + [$w cget -padx])}
+}
+proc minsizes {f} {
+    lmap j [lrange [lsearch -all [lrepeat 32 x] x] 0 [lindex [grid size $f] 0]-1] {
+        grid columnconfigure $f $j -minsize
+    }
+}
+proc tblmarks {w} { lsort [lsearch -all -inline -glob [$w mark names] tbl#m*] }
+
+set LONG [string repeat "word after word wraps " 14]
+set WIDE "intro
+| Key | Note |
+| --- | :-: |
+| **alpha** | short |
+| beta | $LONG |
+| gamma | the zanzibar token sits only in this *styled* cell |"
+
+::tkdown::prose $G end $WIDE base ""
+check "a table makes one window" [llength [$G dump -window 1.0 end]] 3
+check "and one mark" [tblmarks $G] tbl#m1
+check "the window character carries td-tblwin and the base tags" \
+    [lsort [$G tag names tbl#m1]] {base td-tblwin}
+check "the mark sits on the window character" \
+    [lindex [$G dump -window tbl#m1] 0] window
+check "a table met mid-line starts its own line" [$G get tbl#m1-1c] "\n"
+check "the window is followed by a blank line" [$G get tbl#m1+1c tbl#m1+3c] "\n\n"
+check "nothing is built before the text shows it" [winfo exists $G.tbl1] 0
+update; update
+set f $G.tbl1
+check "update realises the frame" [winfo exists $f] 1
+check "the window is the frame" [lindex [$G dump -window tbl#m1] 1] $f
+check "a cell holds its text with the inline markers dropped" \
+    [$f.c1x0 get 1.0 end-1c] alpha
+check "a styled cell reads as the reader sees it" [$f.c3x1 get 1.0 end-1c] \
+    "the zanzibar token sits only in this styled cell"
+check "a header cell is bold throughout" \
+    [expr {"hb" in [$f.c0x1 tag names 1.0]}] 1
+check "a centred column justifies its cells" [$f.c2x1 tag cget al -justify] center
+check "cells are read-only" [$f.c1x0 cget -state] disabled
+check "the frame shows the td-grid colour" [$f cget -background] #aaaaaa
+check "cell ink comes from the first base tag with a foreground" \
+    [$f.c1x0 cget -foreground] #123456
+check "cell background is the pane's" [$f.c1x0 cget -background] [$G cget -background]
+
+# The fit: table_colwidths over the measured words, pinned as minsizes.
+set rows [list]
+set hdr 1
+foreach row [dict get [dict get [reg $G] tables] 1 payload rows] {
+    lappend rows [lmap c $row { ::tkdown::cell_tokens $FA $c $hdr }]
+    set hdr 0
+}
+check "a word is measured in its run's face" \
+    [lindex $rows 1 0] [list [font measure fa-bold alpha]]
+check "a header word is measured bold" \
+    [lindex $rows 0 0] [list [font measure fa-bold Key]]
+set avail [expr {[inner $G] - 2 * 10}]
+set want [::tkdown::table_colwidths $rows $avail \
+    [font measure fa-body 0] [font measure fa-body " "]]
+set got [lmap m [minsizes $f] { expr {$m - 10} }]
+check "the column widths are table_colwidths' over the pane" $got $want
+check "the columns spend at most the pane" \
+    [expr {[tcl::mathop::+ {*}$got] <= $avail}] 1
+check "a long cell wraps" [expr {[$f.c2x1 cget -height] > 1}] 1
+check "its height is its display-line count" [$f.c2x1 cget -height] \
+    [$f.c2x1 count -displaylines 1.0 end]
+check "the table fits the pane" [expr {[winfo width $f] <= [inner $G]}] 1
+
+# A table that fits keeps its natural widths and does not stretch.
+set N [pane nat]
+::tkdown::tags $N $FA
+::tkdown::prose $N end $TBL base ""
+update; update
+set nat [lmap m [minsizes $N.tbl1] { expr {$m - 10} }]
+set natwant [list]
+foreach j {0 1 2} {
+    set mx 0
+    set hdr 1
+    foreach row [dict get [dict get [reg $N] tables] 1 payload rows] {
+        set px [tcl::mathop::+ 0 {*}[::tkdown::cell_tokens $FA [lindex $row $j] $hdr]]
+        if {$px > $mx} { set mx $px }
+        set hdr 0
+    }
+    lappend natwant $mx
+}
+check "a table that fits gets its natural widths" $nat $natwant
+check "and is narrower than the pane" \
+    [expr {[winfo width $N.tbl1] < [inner $N]}] 1
+destroy .nat
+update
+
+# ---- 8. table_scan and table_spotlight --------------------------------------
+check "table_scan finds a word only a cell holds" \
+    [::tkdown::table_scan $G zanzibar 1] \
+    [list [list tbl#m1 "the zanzibar token sits only in this styled cell"]]
+check "table_scan honours case when asked" [::tkdown::table_scan $G ZANZIBAR 0] {}
+check "table_scan folds case when asked" \
+    [llength [::tkdown::table_scan $G ZANZIBAR 1]] 1
+check "table_scan does not see the prose" [::tkdown::table_scan $G intro 1] {}
+check "an empty needle finds nothing" [::tkdown::table_scan $G "" 1] {}
+# A second table painted above the first: the hits come in document order.
+$G mark set top 1.0
+::tkdown::prose $G top $TBL base "\n"
+check "a later-numbered table above comes first" \
+    [::tkdown::table_scan $G e 1] [list {tbl#m2 Name} {tbl#m1 Key}]
+
+::tkdown::table_spotlight $G tbl#m1
+check "the spotlight paints td-spot's colour" [$f cget -background] #ffee00
+::tkdown::table_spotlight $G tbl#m2
+check "lighting another puts the first out" [$f cget -background] #aaaaaa
+::tkdown::table_spotlight $G ""
+check "an empty index puts the light out" [dict get [reg $G] spot] ""
+update
+check "the second table is out too" [$G.tbl2 cget -background] #aaaaaa
+
+# ---- 9. wheel and copy ------------------------------------------------------
+set ::wheel {}
+bind $G <MouseWheel> {lappend ::wheel %D}
+bind $G <Shift-MouseWheel> {lappend ::wheel shift %D}
+event generate $f.c2x1 <MouseWheel> -delta -240
+event generate $f.c2x1 <Shift-MouseWheel> -delta 120
+event generate $f <MouseWheel> -delta 360
+check "the wheel over a cell or the frame reaches the pane, delta intact" \
+    $::wheel {-240 shift 120 360}
+bind $G <MouseWheel> {}
+bind $G <Shift-MouseWheel> {}
+
+event generate $f.c1x0 <Enter>
+check "entering the table shows its copy button" [winfo manager $f.copy] place
+$f.copy invoke
+check "the button copies the table as GFM" [clipboard get] \
+    [::tkdown::table_to_markdown [dict get [dict get [reg $G] tables] 1 payload]]
+check "and acknowledges with a tick" [$f.copy cget -text] "✓"
+after 800 {set ::waited 1}
+vwait ::waited
+check "the tick reverts after 700 ms" [$f.copy cget -text] "⧉"
+event generate $G <Motion> -warp 1 -x 2 -y 2
+event generate $f <Leave>
+update
+check "leaving the table hides its copy button" [winfo manager $f.copy] ""
+
+# ---- 10. refit: margins and option changes ----------------------------------
+set x0 [lindex [$G bbox tbl#m1] 0]
+::tkdown::refit $G -margin 20
+check "refit moves the window's margin" [$G tag cget td-tblwin -lmargin1] 20
+update; update
+check "the window moved with it" [expr {[lindex [$G bbox tbl#m1] 0] - $x0}] 20
+set avail20 [expr {[inner $G] - 40 - 2 * 10}]
+set want20 [::tkdown::table_colwidths $rows $avail20 \
+    [font measure fa-body 0] [font measure fa-body " "]]
+check "refit re-fits to the narrower room" \
+    [lmap m [minsizes $f] { expr {$m - 10} }] $want20
+::tkdown::refit $G -margin {0 0}
+update; update
+
+# A reading-font change re-fits through refit, words measured afresh.
+set FCW [pane fc]
+::tkdown::tags $FCW $FC
+::tkdown::prose $FCW end $WIDE base ""
+update; update
+set before [minsizes $FCW.tbl1]
+font configure fc-body -size 16
+font configure fc-bold -size 16
+::tkdown::refit $FCW
+update; update
+check "a font change re-fits the columns" \
+    [expr {[minsizes $FCW.tbl1] ne $before}] 1
+check "and the grid still fits the pane" \
+    [expr {[winfo width $FCW.tbl1] <= [inner $FCW]}] 1
+destroy .fc
+
+# An unknown -copystyle still builds, on plain TButton; a table spotlit
+# before it is ever shown is built lit.
+toplevel .s
+frame .s.f -width 600 -height 400
+pack propagate .s.f 0
+pack .s.f
+set S [text .s.f.t]
+::tkdown::tags $S $FA -copystyle NoSuchStyle
+$S tag configure td-spot -background #00ff00
+::tkdown::prose $S end $TBL base ""
+::tkdown::table_spotlight $S tbl#m1
+pack $S -fill both -expand 1
+update; update
+check "an unknown -copystyle still realises" [winfo exists $S.tbl1] 1
+check "its button falls back to TButton" [$S.tbl1.copy cget -style] TButton
+check "a grid spotlit before it was built is born lit" \
+    [$S.tbl1 cget -background] #00ff00
+check "with no td-grid, the gridlines take the pane's foreground" \
+    [::tkdown::grid_colour $S] [$S cget -foreground]
+::tkdown::refit $S -copystyle TButton
+check "refit restyles a built button" [$S.tbl1.copy cget -style] TButton
+destroy .s
+update
+check "destroying the pane unregisters it" \
+    [dict exists [set ::tkdown::widgets] $S] 0
+
+# ---- 11. forget, and a delete without it ------------------------------------
+::tkdown::forget $G
+check "forget leaves w no children" [winfo children $G] {}
+check "forget unsets every table mark" [tblmarks $G] {}
+check "forget empties the registry's tables" [dict get [reg $G] tables] {}
+$G delete 1.0 end
+::tkdown::body $G end "$TBL\n\ntext\n\n$TBL" base code
+update; update
+set n1 [llength [winfo children $G]]
+::tkdown::forget $G
+$G delete 1.0 end
+::tkdown::body $G end "$TBL\n\ntext\n\n$TBL" base code
+update; update
+check "a second render after forget makes no more children" \
+    [llength [winfo children $G]] $n1
+check "table ids restart after forget" [tblmarks $G] {tbl#m1 tbl#m2}
+::tkdown::forget $G
+check "and forget clears them again" [winfo children $G] {}
+
+# Delete without forget: one table built, one far below never shown.
+$G delete 1.0 end
+::tkdown::prose $G end "$TBL\n\n[string repeat "filler\n" 200]\n$TBL" base ""
+update; update
+check "only the visible table is built" \
+    [list [winfo exists $G.tbl1] [winfo exists $G.tbl2]] {1 0}
+$G delete 1.0 end
+update
+check "table_scan finds nothing once the text is gone" \
+    [::tkdown::table_scan $G apple 1] {}
+check "and the registry is empty" [dict get [reg $G] tables] {}
+check "the built frame went with its window" [winfo exists $G.tbl1] 0
+::tkdown::forget $G
+
+# A pane destroyed while it holds a built grid unregisters cleanly.
+::tkdown::prose $G end $TBL base ""
+update; update
+destroy $G
+update
+check "destroying a pane with a grid unregisters it" \
+    [dict exists [set ::tkdown::widgets] $G] 0
+check "and drops its grid bindtag's bindings" [bind tkdown.grid$G] {}
 
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails

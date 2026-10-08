@@ -4,9 +4,11 @@ package provide tkdown 2.0a1
 namespace eval ::tkdown {
     namespace export parse_inline segment_tables segment_code_fences \
         segment_blockquotes segment_lists table_to_markdown table_colwidths \
-        tags runs prose body refit forget
-    # Emit state, one entry per registered widget:
-    # widget path -> {fonts <dict> tables <id -> payload> nextid <int>}
+        tags runs prose body refit forget unregister table_scan table_spotlight
+    # Emit state, one entry per registered widget: widget path -> {fonts
+    # margin copystyle quotetags image_cmd on_block tables nextid spot fittok},
+    # tables being id -> the table's entry (see the grid section), spot the
+    # lit table's id and fittok the pending re-fit's after token.
     variable widgets [dict create]
     # table_colwidths' search state, keyed by a per-call id; see colwidths_memo.
     variable colmemo
@@ -716,20 +718,31 @@ proc ::tkdown::inline_unescape {s} {
 # Register a text widget for emission and configure the td-* faces on it.
 # fonts is a dict of Tk font names: body bold italic bolditalic mono are
 # required; h1 h2 h3 are optional heading faces falling back to bold. Extra
-# keys are kept but nothing draws with them.
-# Registration opens the widget's table registry (the parsed payloads behind
-# refit); the registry entry dies with the widget.
-proc ::tkdown::tags {w fonts} {
+# keys are kept but nothing draws with them. The options are those refit
+# re-sets: -margin {left right} (or one n for both) is the host's base margin
+# in screen distance, -copystyle the ttk style of a grid's copy button, and
+# -quotetags, -image_cmd and -on_block are kept for the block emitters.
+# Registration opens the widget's table registry; the entry dies with the
+# widget. Registering a widget again keeps the tables it already holds.
+proc ::tkdown::tags {w fonts args} {
     variable widgets
     foreach k {body bold italic bolditalic mono} {
         if {![dict exists $fonts $k]} {
             error "tkdown: fonts dict missing \"$k\""
         }
     }
-    dict set widgets $w [dict create fonts $fonts tables [dict create] nextid 0]
+    set reg [dict create fonts $fonts margin {0 0} copystyle Copy.TButton \
+        quotetags {} image_cmd {} on_block {} \
+        tables [dict create] nextid 0 spot "" fittok ""]
+    if {[dict exists $widgets $w]} {
+        foreach k {tables nextid spot fittok} {
+            dict set reg $k [dict get $widgets $w $k]
+        }
+    }
+    set reg [::tkdown::options $w $reg $args]
+    dict set widgets $w $reg
     # Later-configured tags win on -font where they stack: headings first so
-    # emphasis spans inside a heading still restyle, the table header face
-    # last so a header cell reads bold over any span it carries.
+    # emphasis spans inside a heading still restyle.
     foreach lvl {h1 h2 h3} {
         set f [expr {[dict exists $fonts $lvl]
             ? [dict get $fonts $lvl] : [dict get $fonts bold]}]
@@ -739,17 +752,75 @@ proc ::tkdown::tags {w fonts} {
     $w tag configure td-italic     -font [dict get $fonts italic]
     $w tag configure td-bolditalic -font [dict get $fonts bolditalic]
     $w tag configure td-code       -font [dict get $fonts mono]
-    $w tag configure td-head       -font [dict get $fonts bold]
-    # td-list carries the list hanging indent and nothing else (geometry-only,
-    # colour stays the host's). lmargin1 10 is the table's own left margin;
-    # lmargin2 30 sets item text (and any wrapped continuation) a marker-width
-    # in from it, and the tab stop at 30 lands the text after the marker there.
-    $w tag configure td-list -lmargin1 10 -lmargin2 30 -tabs 30
-    bind $w <Destroy> +[list ::tkdown::unregister $w]
+    ::tkdown::margins $w
+    # A grid's frame, cells and copy button share one bindtag per pane: the
+    # wheel goes on to w with its delta untouched (a cell would otherwise
+    # take it and the pane stop scrolling under the pointer), and crossing
+    # into or out of a table shows or hides its copy button.
+    set bt tkdown.grid$w
+    foreach ev {<MouseWheel> <Shift-MouseWheel> <TouchpadScroll>} {
+        bind $bt $ev "[list event generate $w $ev -delta] %D; break"
+    }
+    bind $bt <Enter> [list ::tkdown::table_hover $w %W]
+    bind $bt <Leave> [list after idle [list ::tkdown::table_hover_check $w %W]]
+    foreach {ev script} [list <Destroy> [list ::tkdown::unregister $w] \
+            <Configure> [list ::tkdown::refit_later $w]] {
+        if {[string first $script [bind $w $ev]] < 0} {
+            bind $w $ev +$script
+        }
+    }
 }
 
+# Fold option-value pairs into a registry entry and return it. -margin is
+# held as two pixel counts.
+proc ::tkdown::options {w reg opts} {
+    if {[llength $opts] % 2} {
+        error "tkdown: option \"[lindex $opts end]\" has no value"
+    }
+    foreach {opt val} $opts {
+        switch -- $opt {
+            -margin {
+                if {[llength $val] == 1} { set val [list $val $val] }
+                if {[llength $val] != 2} {
+                    error "tkdown: -margin wants {left right} or one distance"
+                }
+                dict set reg margin [lmap d $val { winfo pixels $w $d }]
+            }
+            -copystyle { dict set reg copystyle $val }
+            -quotetags { dict set reg quotetags $val }
+            -image_cmd { dict set reg image_cmd $val }
+            -on_block  { dict set reg on_block $val }
+            default {
+                error "tkdown: unknown option \"$opt\": want -margin,\
+                    -copystyle, -quotetags, -image_cmd or -on_block"
+            }
+        }
+    }
+    return $reg
+}
+
+# The geometry tags, offset from the host's margin. td-list's lmargin1 sets
+# the marker 10 px in; lmargin2 sets item text (and any wrapped
+# continuation) a marker-width further, and the tab stop there lands the
+# text after the marker. td-quote insets a quote block past its bar. A grid
+# sits at the margin itself, and its width is capped by both margins.
+proc ::tkdown::margins {w} {
+    variable widgets
+    lassign [dict get $widgets $w margin] l r
+    $w tag configure td-list -lmargin1 [expr {$l + 10}] \
+        -lmargin2 [expr {$l + 30}] -tabs [expr {$l + 30}] -rmargin $r
+    $w tag configure td-quote -lmargin1 [expr {$l + 14}] \
+        -lmargin2 [expr {$l + 14}] -rmargin $r
+    $w tag configure td-tblwin -lmargin1 $l -lmargin2 $l -rmargin $r
+}
+
+# Drop the widget from the registry, its grids and their bindings with it.
 proc ::tkdown::unregister {w} {
     variable widgets
+    if {![dict exists $widgets $w]} return
+    ::tkdown::forget $w
+    set bt tkdown.grid$w
+    foreach ev [bind $bt] { bind $bt $ev {} }
     dict unset widgets $w
 }
 
@@ -773,8 +844,7 @@ proc ::tkdown::runs {w idx text baseTags} {
 # Insert a prose-or-table run at idx, closed by suffix (a rendering concern,
 # passed rather than parsed). A run with no GFM pipe table goes straight to
 # the heading-and-inline pass; a run carrying one is split by segment_tables
-# and rendered piecewise, each table as tab-aligned columns under its own
-# td-tbl<N> tag.
+# and rendered piecewise, each table as a grid (emit_table).
 proc ::tkdown::prose {w idx text baseTags {suffix "\n\n"}} {
     set segs [::tkdown::segment_tables $text]
     set has_table 0
@@ -810,30 +880,68 @@ proc ::tkdown::body {w idx text baseTags codeTags} {
     $w insert $idx "\n" $baseTags
 }
 
-# Recompute -tabs for every rendered table on w under the current fonts.
-# Stops depend on the font, not the pane width, so a resize recomputes the
-# same values; the live path is a reading-font change.
-proc ::tkdown::refit {w} {
+# Re-set any of tags' options, then bring the pane up to date with them:
+# margins re-derived, copy buttons restyled, tables whose window has gone
+# from the text dropped, and every built grid re-fitted on the next idle
+# pass. A resize or a reading-font change needs only the re-fit, which the
+# pane's <Configure> already schedules; a host calls refit after a font
+# change or to change an option.
+proc ::tkdown::refit {w args} {
     variable widgets
     if {![dict exists $widgets $w]} return
-    dict for {id payload} [dict get $widgets $w tables] {
-        set tag td-tbl$id
-        if {![llength [$w tag ranges $tag]]} continue
-        $w tag configure $tag -tabs [::tkdown::table_tabs $w $payload]
+    dict set widgets $w [::tkdown::options $w [dict get $widgets $w] $args]
+    ::tkdown::margins $w
+    set style [::tkdown::copy_style $w]
+    dict for {id t} [dict get $widgets $w tables] {
+        set f [dict get $t frame]
+        if {[winfo exists $f.copy]} { $f.copy configure -style $style }
+    }
+    ::tkdown::table_prune $w
+    ::tkdown::refit_later $w
+}
+
+# Schedule one fitting pass over the built grids. <Configure> fires per
+# pixel through a sash drag and each fit walks every cell, so the pass is
+# debounced to a single idle callback.
+proc ::tkdown::refit_later {w} {
+    variable widgets
+    if {![dict exists $widgets $w]} return
+    after cancel [dict get $widgets $w fittok]
+    dict set widgets $w fittok [after idle [list ::tkdown::refit_run $w]]
+}
+
+proc ::tkdown::refit_run {w} {
+    variable widgets
+    if {![dict exists $widgets $w]} return
+    dict set widgets $w fittok ""
+    dict for {id t} [dict get $widgets $w tables] {
+        if {![winfo exists [dict get $t frame]]} continue
+        ::tkdown::table_paint $w $id
+        ::tkdown::table_fit $w $id
     }
 }
 
-# Drop w's rendered tables: the registry payloads and the td-tbl<N> tags,
-# which survive a `delete 1.0 end` as configured-but-empty tags and would
-# pile up across reloads. Registration survives; call before a re-render.
+# Drop w's tables: destroy every grid, unset every tbl#m<N> mark, empty the
+# registry. A `delete 1.0 end` alone would leave the marks behind, piled at
+# 1.0 across reloads. Registration survives; call before a re-render, and
+# the table ids start again from one.
 proc ::tkdown::forget {w} {
     variable widgets
     if {![dict exists $widgets $w]} return
+    after cancel [dict get $widgets $w fittok]
+    dict for {id t} [dict get $widgets $w tables] {
+        after cancel [dict get $t fbtok]
+        destroy [dict get $t frame]
+    }
+    if {[winfo exists $w]} {
+        foreach m [$w mark names] {
+            if {[string match tbl#m* $m]} { $w mark unset $m }
+        }
+    }
     dict set widgets $w tables [dict create]
     dict set widgets $w nextid 0
-    foreach tag [$w tag names] {
-        if {[string match td-tbl* $tag]} { $w tag delete $tag }
-    }
+    dict set widgets $w spot ""
+    dict set widgets $w fittok ""
 }
 
 # One normal (table-free) run, split into peer blocks that re-join on the
@@ -898,92 +1006,271 @@ proc ::tkdown::emit_list_items {w idx items baseTags} {
     }
 }
 
-# Render a parsed GFM table {align rows} as tab-aligned columns. Each table
-# gets its own tag td-tbl<N> carrying the computed -tabs (so two tables never
-# share column geometry) plus -wrap none (a row wider than the pane clips at
-# the right edge rather than wrapping and breaking the columns). Cells render
-# through runs so inline markdown inside a cell still styles; header cells
-# also carry td-head for bold. The payload is kept in the widget's registry
-# so a font change can recompute the stops (refit).
+# ---- the grid ------------------------------------------------------------
+#
+# A table is one embedded window: a frame of gridded text cells that wrap
+# their words, so a table wider than the pane folds its long cells instead
+# of running off the edge. A cell is a text widget because one cell can mix
+# faces (bold, `code`). The window builds itself only when the text first
+# shows it (-create), so a long document costs no widgets until it is read;
+# everything search and spotlight need is recorded at emit time instead:
+# the payload, the cells' text as the reader sees it, and a mark on the
+# window character. Per table the registry keeps
+#   mark frame payload base flat lit fbtok cells
+# base being the baseTags the table was painted under and lit whether it
+# is the spotlit table.
+
+# Paint a parsed GFM table {align rows} at idx: the window character under
+# td-tblwin (its margins, raised over the base tags' own) and baseTags (so a
+# host's fold or elide tag reaches the table too), the left-gravity mark
+# tbl#m<N> on it, then a blank line under baseTags. A table met mid-line
+# starts a line of its own.
 proc ::tkdown::emit_table {w idx payload baseTags} {
     variable widgets
     set id [dict get $widgets $w nextid]
     incr id
     dict set widgets $w nextid $id
-    set tag td-tbl$id
-    set ncol [llength [dict get $payload align]]
-    $w tag configure $tag -wrap none -lmargin1 10 -lmargin2 10 \
-        -spacing1 1 -spacing3 1 -tabs [::tkdown::table_tabs $w $payload]
-    set rowtags [concat $baseTags [list $tag]]
-    set first 1
-    foreach row [dict get $payload rows] {
-        for {set j 0} {$j < $ncol} {incr j} {
-            if {$j > 0} { $w insert $idx "\t" $rowtags }
-            set base $rowtags
-            if {$first} { lappend base td-head }
-            ::tkdown::runs $w $idx [lindex $row $j] $base
-        }
-        $w insert $idx "\n" $rowtags
-        set first 0
+    set at [$w index $idx]
+    if {[$w compare $at == end]} { set at [$w index end-1c] }
+    if {[$w compare $at != "$at linestart"]} {
+        $w insert $idx "\n" $baseTags
+        set at [$w index "$at +1c"]
     }
-    $w insert $idx "\n" $baseTags
-    dict set widgets $w tables $id $payload
+    $w window create $idx -create [list ::tkdown::table_realize $w $id] \
+        -align top -pady 2 -stretch 0
+    foreach tag [concat $baseTags [list td-tblwin]] { $w tag add $tag $at }
+    $w tag raise td-tblwin
+    $w mark set tbl#m$id $at
+    $w mark gravity tbl#m$id left
+    $w insert $idx "\n\n" $baseTags
+    set flat [lmap row [dict get $payload rows] {
+        lmap cell $row {
+            set s ""
+            foreach run [::tkdown::parse_inline $cell] { append s [lindex $run 1] }
+            set s
+        }
+    }]
+    dict set widgets $w tables $id [dict create mark tbl#m$id frame $w.tbl$id \
+        payload $payload base $baseTags flat $flat lit 0 fbtok "" cells {}]
 }
 
-# The -tabs spec for a table: N-1 stops (column 0 anchors at the left margin,
-# so a delimiter asking right/center on column 0 falls back to left). A
-# column's stop sits at its content's left edge (left), right edge (right) or
-# centre (center); column content widths are the per-column max over all rows,
-# the header measured bold. The gutter and stops scale with the registered
-# fonts, so the table re-fits when the font changes. Floored by sane_tabs
-# because Tk rejects a non-increasing or non-positive stop.
-proc ::tkdown::table_tabs {w payload} {
+# The window's -create: build table id's frame and return its path, or ""
+# for a table the registry no longer holds. The frame's background is the
+# gridline colour, showing through the one-pixel pads around each cell.
+proc ::tkdown::table_realize {w id} {
     variable widgets
+    if {![dict exists $widgets $w tables $id]} { return "" }
+    set t [dict get $widgets $w tables $id]
+    set f [dict get $t frame]
+    if {[winfo exists $f]} { return $f }
     set fonts [dict get $widgets $w fonts]
-    set align [dict get $payload align]
+    frame $f -borderwidth 0 -highlightthickness 0
+    set align [dict get $t payload align]
     set ncol [llength $align]
-    # Readable defaults, no deeper constraint: a 10 px left margin and a
-    # gutter two body-font digits wide, which scales the column gap with
-    # the font where a fixed pixel count would not.
-    set lm 10
-    set gut [font measure [dict get $fonts body] "00"]
-    set cw [lrepeat $ncol 0]
-    set first 1
-    foreach row [dict get $payload rows] {
+    set cells [list]
+    set r 0
+    foreach row [dict get $t payload rows] {
         for {set j 0} {$j < $ncol} {incr j} {
-            set width [::tkdown::cell_width $fonts [lindex $row $j] $first]
-            if {$width > [lindex $cw $j]} { lset cw $j $width }
+            set c $f.c${r}x$j
+            text $c -wrap word -width 1 -height 1 -borderwidth 0 \
+                -highlightthickness 0 -padx 4 -pady 2 -takefocus 0 \
+                -font [dict get $fonts body]
+            ::tkdown::table_fill_cell $c $fonts [lindex $row $j] \
+                [expr {$r == 0}] [lindex $align $j]
+            grid $c -row $r -column $j -sticky nsew -padx 1 -pady 1
+            # A cell's height follows its width: whenever grid hands it one
+            # (first map, a re-fit, a font change), -height is resynced to
+            # the wrapped line count.
+            bind $c <Configure> [list ::tkdown::table_cell_height $c]
+            lappend cells $c
         }
-        set first 0
+        incr r
     }
-    set stops [list]
-    set x $lm
-    for {set j 0} {$j < $ncol} {incr j} {
-        if {$j > 0} {
-            set a [lindex $align $j]
-            switch -- $a {
-                right  { set pos [expr {$x + [lindex $cw $j]}] }
-                center { set pos [expr {$x + [lindex $cw $j] / 2}] }
-                default { set pos $x }
-            }
-            lappend stops $pos $a
-        }
-        set x [expr {$x + [lindex $cw $j] + $gut}]
+    ttk::button $f.copy -style [::tkdown::copy_style $w] -text "⧉" -width 2 \
+        -takefocus 0 -cursor hand2 -command [list ::tkdown::table_copy $w $id]
+    foreach x [concat [list $f $f.copy] $cells] {
+        bindtags $x [linsert [bindtags $x] 1 tkdown.grid$w]
     }
-    return [::tkdown::sane_tabs $stops]
+    bind $f <Destroy> [list ::tkdown::table_destroyed $w $id %W]
+    dict set widgets $w tables $id cells $cells
+    ::tkdown::table_paint $w $id
+    after idle [list ::tkdown::table_fit $w $id]
+    return $f
 }
 
-# The rendered pixel width of one cell, summing each inline run in the font
-# it will paint in (so a bold or `code` span is measured at its real width,
-# not under-measured in the base face). bold widens the plain runs, for a
-# header cell.
-proc ::tkdown::cell_width {fonts text bold} {
-    set w 0
-    foreach run [::tkdown::parse_inline $text] {
+# Fill one cell from its markdown: the inline runs under per-cell face
+# tags, a header cell bold throughout (hb is configured last, so it
+# outranks the span faces), an aligned column justified by al.
+proc ::tkdown::table_fill_cell {c fonts cell header align} {
+    foreach {tg k} {b bold i italic bi bolditalic cd mono hb bold} {
+        $c tag configure $tg -font [dict get $fonts $k]
+    }
+    if {$align ne "left"} { $c tag configure al -justify $align }
+    foreach run [::tkdown::parse_inline $cell] {
         lassign $run style chunk
-        if {$bold} {
-            # A header cell paints bold throughout: td-head outranks every
-            # span face where they stack, so measuring must too.
+        switch -- $style {
+            code       { set tags cd }
+            bold       { set tags b }
+            italic     { set tags i }
+            bolditalic { set tags bi }
+            default    { set tags {} }
+        }
+        $c insert end $chunk $tags
+    }
+    if {$header} { $c tag add hb 1.0 end }
+    if {$align ne "left"} { $c tag add al 1.0 end }
+    $c configure -state disabled
+}
+
+# Colour a built grid from the pane as it stands: the frame in the gridline
+# (or spotlight) colour, each cell in the pane's background and cursor and
+# the ink of the table's base tags.
+proc ::tkdown::table_paint {w id} {
+    variable widgets
+    set t [dict get $widgets $w tables $id]
+    set f [dict get $t frame]
+    set bg [::tkdown::grid_colour $w]
+    if {[dict get $t lit]} {
+        set spot [::tkdown::tag_ink $w td-spot -background]
+        if {$spot ne ""} { set bg $spot }
+    }
+    $f configure -background $bg
+    set fg [$w cget -foreground]
+    foreach tag [dict get $t base] {
+        set ink [::tkdown::tag_ink $w $tag -foreground]
+        if {$ink ne ""} { set fg $ink; break }
+    }
+    foreach c [dict get $t cells] {
+        $c configure -background [$w cget -background] -foreground $fg \
+            -cursor [$w cget -cursor]
+    }
+}
+
+# A tag option's value on w, or "" when the host has not configured it.
+proc ::tkdown::tag_ink {w tag opt} {
+    if {[catch {$w tag cget $tag $opt} v]} { return "" }
+    return $v
+}
+
+proc ::tkdown::grid_colour {w} {
+    set c [::tkdown::tag_ink $w td-grid -background]
+    if {$c eq ""} { set c [$w cget -foreground] }
+    return $c
+}
+
+# The copy button's style: -copystyle while it names a style ttk knows,
+# else plain TButton, so a host that styled nothing still gets a button.
+proc ::tkdown::copy_style {w} {
+    variable widgets
+    set s [dict get $widgets $w copystyle]
+    if {[catch {ttk::style layout $s}]} { set s TButton }
+    return $s
+}
+
+# The table id behind a window of w's grids (frame, cell or button), or "".
+proc ::tkdown::table_of {w x} {
+    set pre $w.tbl
+    if {[string first $pre $x] != 0} { return "" }
+    if {![regexp {^(\d+)(\.|$)} [string range $x [string length $pre] end] \
+            -> id]} { return "" }
+    return $id
+}
+
+# Show a table's copy button at its top-right while the pointer is over it.
+# Crossing from the frame into a cell fires <Leave> on the frame, so the
+# hide waits for idle and keeps the button while the pointer is anywhere
+# inside the frame.
+proc ::tkdown::table_hover {w x} {
+    set id [::tkdown::table_of $w $x]
+    if {$id eq ""} return
+    set f $w.tbl$id
+    if {![winfo exists $f.copy]} return
+    place $f.copy -in $f -relx 1.0 -x -2 -y 2 -anchor ne
+    raise $f.copy
+}
+
+proc ::tkdown::table_hover_check {w x} {
+    set id [::tkdown::table_of $w $x]
+    if {$id eq ""} return
+    set f $w.tbl$id
+    if {![winfo exists $f.copy]} return
+    set at [winfo containing {*}[winfo pointerxy $f]]
+    if {$at eq $f || [string first $f. $at] == 0} return
+    place forget $f.copy
+}
+
+# The copy button's action: the table as GFM onto the clipboard, the
+# embedded window's text being out of reach of a drag-selection. The button
+# shows ✓ for 700 ms.
+proc ::tkdown::table_copy {w id} {
+    variable widgets
+    if {![dict exists $widgets $w tables $id]} return
+    set t [dict get $widgets $w tables $id]
+    clipboard clear -displayof $w
+    clipboard append -displayof $w -- \
+        [::tkdown::table_to_markdown [dict get $t payload]]
+    set f [dict get $t frame]
+    if {![winfo exists $f.copy]} return
+    after cancel [dict get $t fbtok]
+    $f.copy configure -text "✓"
+    dict set widgets $w tables $id fbtok \
+        [after 700 [list ::tkdown::table_copy_reset $w $id]]
+}
+
+proc ::tkdown::table_copy_reset {w id} {
+    variable widgets
+    if {![dict exists $widgets $w tables $id]} return
+    dict set widgets $w tables $id fbtok ""
+    set f [dict get $widgets $w tables $id frame]
+    if {[winfo exists $f.copy]} { $f.copy configure -text "⧉" }
+}
+
+# Size a built grid's columns to the pane. avail is the pane's inner width
+# less both margins and, per column, the two gridline pixels and the
+# cell's own padding; table_colwidths turns the cells' measured words into
+# column widths, pinned as grid minsizes. The cells' <Configure> bindings
+# turn the new widths into wrapped heights. Words are measured afresh on
+# every fit, so a font change re-fits with nothing else to do.
+proc ::tkdown::table_fit {w id} {
+    variable widgets
+    if {![dict exists $widgets $w tables $id]} return
+    set t [dict get $widgets $w tables $id]
+    set f [dict get $t frame]
+    if {![winfo exists $f]} return
+    if {[winfo width $w] <= 1} return
+    set fonts [dict get $widgets $w fonts]
+    set ncol [llength [dict get $t payload align]]
+    lassign [dict get $widgets $w margin] l r
+    set inset [expr {2 * ([winfo pixels $w [$w cget -borderwidth]] \
+        + [winfo pixels $w [$w cget -highlightthickness]] \
+        + [winfo pixels $w [$w cget -padx]])}]
+    set avail [expr {[winfo width $w] - $inset - $l - $r - $ncol * 10}]
+    if {$avail < $ncol} { set avail $ncol }
+    set rows [list]
+    set header 1
+    foreach row [dict get $t payload rows] {
+        lappend rows [lmap cell $row { ::tkdown::cell_tokens $fonts $cell $header }]
+        set header 0
+    }
+    set body [dict get $fonts body]
+    set widths [::tkdown::table_colwidths $rows $avail \
+        [font measure $body "0"] [font measure $body " "]]
+    set j 0
+    foreach cw $widths {
+        grid columnconfigure $f $j -minsize [expr {$cw + 10}] -weight 0
+        incr j
+    }
+}
+
+# The pixel widths of one cell's words, each run measured in the face it
+# paints in (a header cell is bold throughout). A word split across runs,
+# as in a**b**, is one token whose width is the sum of its pieces.
+proc ::tkdown::cell_tokens {fonts cell header} {
+    set out [list]
+    set cur -1
+    foreach run [::tkdown::parse_inline $cell] {
+        lassign $run style chunk
+        if {$header} {
             set f [dict get $fonts bold]
         } else {
             switch -- $style {
@@ -994,21 +1281,118 @@ proc ::tkdown::cell_width {fonts text bold} {
                 default    { set f [dict get $fonts body] }
             }
         }
-        incr w [font measure $f $chunk]
+        foreach piece [regexp -all -inline {\s+|\S+} $chunk] {
+            if {[string is space $piece]} {
+                if {$cur >= 0} { lappend out $cur; set cur -1 }
+            } elseif {$cur < 0} {
+                set cur [font measure $f $piece]
+            } else {
+                incr cur [font measure $f $piece]
+            }
+        }
     }
-    return $w
+    if {$cur >= 0} { lappend out $cur }
+    return $out
 }
 
-# Coerce a {pos align ...} tab spec to strictly increasing positive stops,
-# which Tk requires. Guards the degenerate column geometry a too-narrow width
-# (a build-time placeholder, or high DPI) can produce.
-proc ::tkdown::sane_tabs {tabs} {
-    set out [list]
-    set prev 0
-    foreach {x align} $tabs {
-        if {$x <= $prev} { set x [expr {$prev + 1}] }
-        lappend out $x $align
-        set prev $x
+# One cell's <Configure>: size it to its wrapped display-line count at the
+# width grid just gave it. Setting -height resizes only the cell's row, and
+# the height-only Configure that follows measures the same count, so the
+# chain ends there.
+proc ::tkdown::table_cell_height {c} {
+    if {![winfo exists $c]} return
+    set dl [$c count -update -displaylines 1.0 end]
+    if {$dl < 1} { set dl 1 }
+    if {[$c cget -height] != $dl} { $c configure -height $dl }
+}
+
+# A grid's <Destroy>, whether by forget or by its window character being
+# deleted: the table leaves the registry. Its mark stays until forget.
+proc ::tkdown::table_destroyed {w id x} {
+    variable widgets
+    if {![dict exists $widgets $w tables $id]} return
+    if {[dict get $widgets $w tables $id frame] ne $x} return
+    after cancel [dict get $widgets $w tables $id fbtok]
+    dict unset widgets $w tables $id
+    if {[dict get $widgets $w spot] eq $id} { dict set widgets $w spot "" }
+}
+
+# Drop the tables whose mark no longer sits on their window character: the
+# text holding them was deleted before the grid was ever built, so no
+# <Destroy> came to say so.
+proc ::tkdown::table_prune {w} {
+    variable widgets
+    dict for {id t} [dict get $widgets $w tables] {
+        set m [dict get $t mark]
+        if {![catch {$w dump -window $m} d]} {
+            if {[llength $d] == 3 && [lindex $d 1] in [list "" [dict get $t frame]]} {
+                continue
+            }
+            $w mark unset $m
+        }
+        after cancel [dict get $t fbtok]
+        destroy [dict get $t frame]
+        dict unset widgets $w tables $id
+        if {[dict get $widgets $w spot] eq $id} { dict set widgets $w spot "" }
     }
-    return $out
+}
+
+# Search the tables' text, which a `$w search` cannot see inside an
+# embedded window. One hit per table, in document order: {mark excerpt},
+# the excerpt being the first matching cell's text as the reader sees it.
+proc ::tkdown::table_scan {w needle nocase} {
+    variable widgets
+    if {![dict exists $widgets $w] || $needle eq ""} { return {} }
+    ::tkdown::table_prune $w
+    if {$nocase} { set needle [string tolower $needle] }
+    set out [list]
+    dict for {id t} [dict get $widgets $w tables] {
+        set hit ""
+        foreach cell [concat {*}[dict get $t flat]] {
+            set hay [expr {$nocase ? [string tolower $cell] : $cell}]
+            if {[string first $needle $hay] >= 0} { set hit $cell; break }
+        }
+        if {$hit ne ""} { lappend out [list [dict get $t mark] $hit] }
+    }
+    return [lsort -command [list ::tkdown::mark_order $w] $out]
+}
+
+proc ::tkdown::mark_order {w a b} {
+    set a [lindex $a 0]
+    set b [lindex $b 0]
+    if {[$w compare $a < $b]} { return -1 }
+    if {[$w compare $a > $b]} { return 1 }
+    return 0
+}
+
+# Light the table whose mark sits at idx and put out the one lit before;
+# any other idx, "" included, only puts it out. A lit grid's frame takes
+# td-spot's background, so the gridlines and border read as the hit. The
+# flag is set before the grid exists, so a reveal that scrolls a table into
+# view for the first time builds it lit.
+proc ::tkdown::table_spotlight {w idx} {
+    variable widgets
+    if {![dict exists $widgets $w]} return
+    set target ""
+    if {$idx ne ""} {
+        dict for {id t} [dict get $widgets $w tables] {
+            if {![catch {$w compare [dict get $t mark] == $idx} same] && $same} {
+                set target $id
+                break
+            }
+        }
+    }
+    set prev [dict get $widgets $w spot]
+    if {$prev ne "" && $prev ne $target && [dict exists $widgets $w tables $prev]} {
+        dict set widgets $w tables $prev lit 0
+        if {[winfo exists [dict get $widgets $w tables $prev frame]]} {
+            ::tkdown::table_paint $w $prev
+        }
+    }
+    dict set widgets $w spot $target
+    if {$target eq ""} return
+    dict set widgets $w tables $target lit 1
+    if {[winfo exists [dict get $widgets $w tables $target frame]]} {
+        ::tkdown::table_paint $w $target
+    }
 }

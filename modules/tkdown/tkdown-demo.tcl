@@ -3,21 +3,22 @@
 # markdown sampler that exercises every form the module covers - ATX headings,
 # emphasis and code spans, a fenced block, a blockquote (split off with
 # segment_blockquotes and painted by the host, the idiom the man page
-# describes), a GFM table with mixed alignment and styled cells, and bullet
-# and numbered flat lists. It loads only the tkdown module.
+# describes), GFM tables - one with mixed alignment and styled cells, one too
+# wide for the pane - and bullet and numbered flat lists. It loads only the
+# tkdown module.
 #
-# Run it with bare wish:   wish9.0 demos/tkdown-demo.tcl
+# Run it with bare wish:   wish9.0 modules/tkdown/tkdown-demo.tcl
 #
-# Try: the font-size spinbox re-sizes the registered fonts and calls
-# ::tkdown::refit, so the table's tab stops recompute live while the prose
-# reflows on its own.
+# Try: narrow the window and the wide table's long cells wrap to keep it
+# inside the pane; the font-size spinbox re-sizes the registered fonts and
+# calls ::tkdown::refit, so every grid re-fits its columns to the new face.
 
 package require Tcl 9
 package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
 foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
-package require tkdown
+package require tkdown 2.0a1
 
 # The host owns the fonts: tkdown binds its faces onto names the host has
 # already created and sized, which is what lets one spinbox re-size the lot.
@@ -68,8 +69,16 @@ proc greet {who} {
 | Form | Marker | Where it *lands* |
 |:-----|:------:|-----------------:|
 | heading | `#` through `######` | clamped to **h3** |
-| table | pipes | tab-aligned columns |
+| table | pipes | a grid of wrapping cells |
 | list | `-` or `1.` | one row per item |
+
+A table wider than the pane keeps its columns and wraps its longest cells, each column given the width that costs the fewest wrapped lines:
+
+| Module | Role | Notes |
+|:-------|:-----|:------|
+| tkdown | markdown onto a text widget | Paints prose, fenced code, lists and pipe tables; every `td-*` tag it configures is a face or a margin, so the host keeps the ink. |
+| streamdoc | a reading pane | Holds the text widget, its scrolling and its find bar, and knows nothing of markdown; a host joins the two with a line or two of glue. |
+| a host | the application | Owns the fonts, the colours and the margins, and decides when a document is painted, forgotten and painted again. |
 
 ### Lists
 
@@ -101,13 +110,15 @@ pack .body.t -side left -fill both -expand 1
     body DemoBody bold DemoBold italic DemoItalic bolditalic DemoBI \
     mono DemoMono h1 DemoH1 h2 DemoH2 h3 DemoH3]
 
-# Host chrome: the module's td-* tags are font-only, so ink, margins and the
-# quote bar are ordinary tags the host configures and stacks underneath.
+# Host chrome: the module's td-* tags are font or geometry only, so ink and
+# the quote bar are ordinary tags the host configures and stacks underneath.
 .body.t tag configure base -foreground #102a43
 .body.t tag configure fence -font DemoMono -background #eef2f6 \
     -lmargin1 18 -lmargin2 18 -rmargin 18 -spacing1 4 -spacing3 4
 .body.t tag configure quote -foreground #52606d \
     -lmargin1 22 -lmargin2 22 -rmargin 22
+# A grid's gridlines are the host's ink too.
+.body.t tag configure td-grid -background #c8d1dc
 
 # Paint the sampler through the layered splitters, fences first so a marker
 # inside a fence never reads as a quote, then quotes, prose through ::prose
