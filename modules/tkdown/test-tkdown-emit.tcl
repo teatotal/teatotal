@@ -2,9 +2,10 @@
 # The emit half of tkdown: painting parsed markdown onto a Tk text widget.
 #
 # Where test-tkdown-parse.tcl drives the pure parse procs under a bare tclsh,
-# this drives the widget-facing procs - tags, runs, prose, body, refit,
-# forget, table_scan, table_spotlight - that need Tk: the per-widget
-# registry and its options, the td-* faces, and the grid a table renders as.
+# this drives the widget-facing procs - tags, runs, prose, body and its
+# emitters, refit, forget, table_scan, table_spotlight, link_at, link_scan,
+# ensure_fonts - that need Tk: the per-widget registry and its options, the
+# td-* faces, the block walk, and the grid a table renders as.
 # It requires only tkdown and builds its own named fonts, so a pass proves
 # the module stands alone.
 #
@@ -168,7 +169,7 @@ check "emphasis inside a list item still styles" [tagtext .l3 td-bold] "bold"
 # Prose above and below a list; the list band is its own td-list range.
 text .l4
 ::tkdown::tags .l4 $FA
-::tkdown::prose .l4 end "intro line\n- a\n- b\noutro line" base ""
+::tkdown::prose .l4 end "intro line\n- a\n- b\n\noutro line" base ""
 check "prose around a list stays outside td-list" [tagtext .l4 td-list] "•\ta\n•\tb"
 check "the surrounding prose is present in the widget" \
     [expr {[string match {*intro line*outro line*} [.l4 get 1.0 end-1c]]}] 1
@@ -218,15 +219,16 @@ set WIDE "intro
 | beta | $LONG |
 | gamma | the zanzibar token sits only in this *styled* cell |"
 
-::tkdown::prose $G end $WIDE base ""
+::tkdown::body $G end $WIDE base code
 check "a table makes one window" [llength [$G dump -window 1.0 end]] 3
 check "and one mark" [tblmarks $G] tbl#m1
 check "the window character carries td-tblwin and the base tags" \
     [lsort [$G tag names tbl#m1]] {base td-tblwin}
 check "the mark sits on the window character" \
     [lindex [$G dump -window tbl#m1] 0] window
-check "a table met mid-line starts its own line" [$G get tbl#m1-1c] "\n"
-check "the window is followed by a blank line" [$G get tbl#m1+1c tbl#m1+3c] "\n\n"
+check "the prose above ends its line before the table" \
+    [$G get 1.0 tbl#m1] "intro\n"
+check "the window ends its line" [$G get tbl#m1+1c] "\n"
 check "nothing is built before the text shows it" [winfo exists $G.tbl1] 0
 update; update
 set f $G.tbl1
@@ -271,7 +273,7 @@ check "the table fits the pane" [expr {[winfo width $f] <= [inner $G]}] 1
 # A table that fits keeps its natural widths and does not stretch.
 set N [pane nat]
 ::tkdown::tags $N $FA
-::tkdown::prose $N end $TBL base ""
+::tkdown::body $N end $TBL base code
 update; update
 set nat [lmap m [minsizes $N.tbl1] { expr {$m - 10} }]
 set natwant [list]
@@ -302,7 +304,7 @@ check "table_scan does not see the prose" [::tkdown::table_scan $G intro 1] {}
 check "an empty needle finds nothing" [::tkdown::table_scan $G "" 1] {}
 # A second table painted above the first: the hits come in document order.
 $G mark set top 1.0
-::tkdown::prose $G top $TBL base "\n"
+::tkdown::body $G top $TBL base code
 check "a later-numbered table above comes first" \
     [::tkdown::table_scan $G e 1] [list {tbl#m2 Name} {tbl#m1 Key}]
 
@@ -358,7 +360,7 @@ update; update
 # A reading-font change re-fits through refit, words measured afresh.
 set FCW [pane fc]
 ::tkdown::tags $FCW $FC
-::tkdown::prose $FCW end $WIDE base ""
+::tkdown::body $FCW end $WIDE base code
 update; update
 set before [minsizes $FCW.tbl1]
 font configure fc-body -size 16
@@ -380,7 +382,7 @@ pack .s.f
 set S [text .s.f.t]
 ::tkdown::tags $S $FA -copystyle NoSuchStyle
 $S tag configure td-spot -background #00ff00
-::tkdown::prose $S end $TBL base ""
+::tkdown::body $S end $TBL base code
 ::tkdown::table_spotlight $S tbl#m1
 pack $S -fill both -expand 1
 update; update
@@ -412,32 +414,210 @@ $G delete 1.0 end
 update; update
 check "a second render after forget makes no more children" \
     [llength [winfo children $G]] $n1
-check "table ids restart after forget" [tblmarks $G] {tbl#m1 tbl#m2}
+check "table ids carry on after forget" [tblmarks $G] {tbl#m5 tbl#m6}
 ::tkdown::forget $G
 check "and forget clears them again" [winfo children $G] {}
 
 # Delete without forget: one table built, one far below never shown.
 $G delete 1.0 end
-::tkdown::prose $G end "$TBL\n\n[string repeat "filler\n" 200]\n$TBL" base ""
+::tkdown::body $G end "$TBL\n\n[string repeat "filler\n" 200]\n$TBL" base code
 update; update
 check "only the visible table is built" \
-    [list [winfo exists $G.tbl1] [winfo exists $G.tbl2]] {1 0}
+    [list [winfo exists $G.tbl7] [winfo exists $G.tbl8]] {1 0}
 $G delete 1.0 end
 update
 check "table_scan finds nothing once the text is gone" \
     [::tkdown::table_scan $G apple 1] {}
 check "and the registry is empty" [dict get [reg $G] tables] {}
-check "the built frame went with its window" [winfo exists $G.tbl1] 0
+check "the built frame went with its window" [winfo exists $G.tbl7] 0
 ::tkdown::forget $G
 
 # A pane destroyed while it holds a built grid unregisters cleanly.
-::tkdown::prose $G end $TBL base ""
+::tkdown::body $G end $TBL base code
 update; update
 destroy $G
 update
 check "destroying a pane with a grid unregisters it" \
     [dict exists [set ::tkdown::widgets] $G] 0
 check "and drops its grid bindtag's bindings" [bind tkdown.grid$G] {}
+
+# ---- 12. ensure_fonts --------------------------------------------------------
+set SV [::tkdown::ensure_fonts]
+check "ensure_fonts returns the SV* fonts dict" $SV \
+    {body SVBody bold SVBodyBold italic SVBodyItalic bolditalic SVBodyBoldItalic mono SVMono}
+check "every face it names exists, SVMonoBold too" \
+    [lmap f [concat [dict values $SV] SVMonoBold] { expr {$f in [font names]} }] \
+    {1 1 1 1 1 1}
+check "a second call creates nothing and returns the same" [::tkdown::ensure_fonts] $SV
+check "SVBodyBold is TkTextFont's family in bold" \
+    [list [font actual SVBodyBold -family] [font actual SVBodyBold -weight]] \
+    [list [font actual TkTextFont -family] bold]
+
+# ---- 13. the walk: blocks, their newlines and -on_block -----------------------
+set ::blocks {}
+proc heard {args} { lappend ::blocks $args }
+text .b
+::tkdown::tags .b $FA -on_block heard
+::tkdown::body .b end "intro\n```\ncode line\n```\n> q1\n---\n!\[alt\](p.png)\n| a | b |\n|---|---|\n| 1 | 2 |\n\nafter" base code
+check "-on_block hears every block in order" [lmap b $::blocks { lindex $b 0 }] \
+    {prose code quote rule image table prose}
+check "the blocks run from the start to the body's closing newline" \
+    [list [lindex $::blocks 0 1] [lindex $::blocks end 2]] [list 1.0 [.b index end-2c]]
+set adjacent 1
+foreach a [lrange $::blocks 0 end-1] b [lrange $::blocks 1 end] {
+    if {[lindex $a 2] ne [lindex $b 1]} { set adjacent 0 }
+}
+check "each block starts where the one before it ended" $adjacent 1
+check "each block's range holds what it painted" \
+    [lmap b $::blocks { .b get [lindex $b 1] [lindex $b 2] }] \
+    [list "intro\n" "code line\n" "\n▏ q1\n" " \n" "alt\n" "\n" "\nafter\n"]
+check "the table's range holds its window" \
+    [llength [.b dump -window [lindex $::blocks 5 1] [lindex $::blocks 5 2]]] 3
+check "each block hears its text" [lmap b $::blocks { lindex $b 3 }] \
+    [list intro "code line" q1 "" alt "| a | b |\n| --- | --- |\n| 1 | 2 |" "\nafter"]
+check "code goes in under codeTags alone" [.b tag names [lindex $::blocks 1 1]] code
+::tkdown::forget .b
+
+# A table under a list starts on a line of its own.
+text .lt
+::tkdown::tags .lt $FA
+::tkdown::body .lt end "- a\n- b\n| x | y |\n|---|---|\n| 1 | 2 |" base code
+set m [tblmarks .lt]
+check "a list ends its line before a table" \
+    [.lt get "$m -1c linestart" $m] "•\tb\n"
+# The grid's own guard: a table emitted mid-line opens a line first.
+.lt insert end "tail" base
+::tkdown::emit_table .lt end [dict create align left rows {{h} {v}}] base
+set m [lindex [tblmarks .lt] end]
+check "a table met mid-line starts its own line" [.lt get "$m -1c"] "\n"
+::tkdown::forget .lt
+
+# ---- 14. emitters: replaced, switched off, refused ---------------------------
+proc myquote {w idx text baseTags} { $w insert $idx "Q:$text" $baseTags }
+text .e
+::tkdown::tags .e $FA
+::tkdown::body .e end "> hi" base code [dict create quote myquote]
+check "a given emitter replaces the default; the walk ends its line" \
+    [.e get 1.0 end-1c] "Q:hi\n\n"
+.e delete 1.0 end
+::tkdown::body .e end "> **not** quoted\nnext" base code {quote ""}
+check "quote \"\" leaves a > line literal" [.e get 1.0 end-1c] "> not quoted\nnext\n\n"
+check "and paints no quote" [.e tag ranges td-quote] {}
+check "its runs still style" [tagtext .e td-bold] not
+.e delete 1.0 end
+::tkdown::body .e end "a\n```\nx\n```" base code {code ""}
+check "code \"\" leaves the fence lines in the prose" [.e get 1.0 end-1c] "a\n```\nx\n```\n\n"
+.e delete 1.0 end
+::tkdown::body .e end "a\n\n---\n\n!\[cat\](c.png)\n\n| a |\n| - |" base code \
+    {rule "" image "" table ""}
+check "rule, image and table \"\" reach prose as written" \
+    [.e get 1.0 end-1c] "a\n\n---\n\ncat\n\n| a |\n| - |\n\n"
+check "an unknown kind errors" [catch {::tkdown::body .e end x base code {bogus p}}] 1
+check "an empty prose emitter errors" [catch {::tkdown::body .e end x base code {prose ""}}] 1
+
+# ---- 15. the default quote emitter -------------------------------------------
+text .q
+::tkdown::tags .q $FA -quotetags {qink qinset} -margin 6
+::tkdown::body .q end "intro\n> one *it*\n> > inner\nafter" base code
+check "a quote after a line of prose is set off by a blank line" \
+    [.q get 1.0 4.0] "intro\n\n▏ one it\n"
+check "each line opens with the bar" [tagtext .q td-quotebar] "▏ ▏ "
+check "a nested > stays literal" [.q get 4.0 "4.0 lineend"] "▏ > inner"
+check "the block carries td-quote" [tagtext .q td-quote] "▏ one it\n▏ > inner\n"
+set i [lindex [.q tag ranges td-italic] 0]
+check "a quote's runs carry the base tags and -quotetags" \
+    [lsort [.q tag names $i]] {base qink qinset td-italic td-quote}
+check "td-quote insets from the margin" \
+    [list [.q tag cget td-quote -lmargin1] [.q tag cget td-quote -lmargin2]] {20 20}
+.q delete 1.0 end
+::tkdown::body .q end "intro\n\n> q" base code
+check "a blank line already there is not doubled" [.q get 1.0 4.0] "intro\n\n▏ q\n"
+.q delete 1.0 end
+::tkdown::body .q end "> q\n\n---\n\nA" base code
+check "a blank line between two blocks is kept" [.q get 1.0 end-1c] "▏ q\n\n \n\nA\n\n"
+
+# ---- 16. rules, setext headings, images ---------------------------------------
+text .x
+::tkdown::tags .x $FA
+::tkdown::body .x end "para\n\n---\n\nmore" base code
+check "a rule is one line of a space under td-rule" [tagtext .x td-rule] " \n"
+check "and the base tags" [lsort [.x tag names [lindex [.x tag ranges td-rule] 0]]] {base td-rule}
+check "td-rule's face is TdRule, two pixels" \
+    [list [.x tag cget td-rule -font] [font configure TdRule -size]] {TdRule -2}
+.x delete 1.0 end
+::tkdown::body .x end "Title\n---\nbody\n\nBig\n===" base code
+check "a line over --- paints as h2" [tagtext .x td-h2] Title
+check "a line over === paints as h1" [tagtext .x td-h1] Big
+check "and is not a rule" [.x tag ranges td-rule] {}
+check "the underline is gone" [.x get 1.0 end-1c] "Title\nbody\n\nBig\n\n"
+.x delete 1.0 end
+::tkdown::body .x end "## Closed ##" base code
+check "an ATX heading drops its closing hashes" [tagtext .x td-h2] Closed
+
+.x delete 1.0 end
+::tkdown::body .x end "!\[a *cat*\](cat.png)" base code
+check "with no -image_cmd an image paints its alt text" [.x get 1.0 end-1c] "a cat\n\n"
+check "its runs style" [tagtext .x td-italic] cat
+image create photo dot -width 4 -height 4
+set ::asked {}
+proc img_for {path} { lappend ::asked $path; expr {$path eq "dot.png" ? "dot" : ""} }
+::tkdown::refit .x -image_cmd img_for
+.x delete 1.0 end
+::tkdown::body .x end "!\[d\](dot.png)\n!\[gone\](none.png)" base code
+check "-image_cmd is asked for each path" $::asked {dot.png none.png}
+check "an image it returns is embedded" [lindex [.x dump -image 1.0 end] 1] dot
+check "under the base tags" [.x tag names 1.0] base
+check "an empty answer falls back to the alt" [.x get 2.0 "2.0 lineend"] gone
+
+# ---- 17. links -----------------------------------------------------------------
+text .k
+::tkdown::tags .k $FA
+.k tag configure td-link -underline 1
+::tkdown::runs .k end {see [docs](https://x.org/D) and https://y.org/e.} base
+check "a link's text lies under td-link" [tagtext .k td-link] "docshttps://y.org/e"
+check "td-link carries the body face" [.k tag cget td-link -font] [dict get $FA body]
+set d [lindex [.k tag ranges td-link] 0]
+check "a link's characters carry base, td-link and its own tag" \
+    [regexp {^base td-link td-link\d+$} [lsort [.k tag names $d]]] 1
+check "link_at gives the url under an index" [::tkdown::link_at .k "$d +2c"] https://x.org/D
+check "and nothing off a link" [::tkdown::link_at .k 1.0] ""
+check "link_scan finds by url, document order" [::tkdown::link_scan .k org 0] \
+    [list [list $d https://x.org/D] [list [.k search https://y 1.0] https://y.org/e]]
+check "link_scan honours case when asked" [::tkdown::link_scan .k x.org/d 0] {}
+check "link_scan folds case when asked" [llength [::tkdown::link_scan .k X.ORG/D 1]] 1
+check "an empty needle finds nothing" [::tkdown::link_scan .k "" 1] {}
+set before [lsort [lsearch -all -inline -regexp [.k tag names] {^td-link\d+$}]]
+::tkdown::forget .k
+check "forget deletes the per-link tags" \
+    [lsearch -all -inline -regexp [.k tag names] {^td-link\d+$}] {}
+check "and link_at knows nothing" [::tkdown::link_at .k "$d +2c"] ""
+::tkdown::runs .k end { [again](u)} base
+set after [lsearch -all -inline -regexp [.k tag names] {^td-link\d+$}]
+check "a link's number is never reused" [expr {$after ni $before}] 1
+.k delete 1.0 end
+check "link_scan drops a link whose text is gone" \
+    [list [::tkdown::link_scan .k u 0] [dict get [reg .k] links]] {{} {}}
+
+# ---- 18. nested lists ------------------------------------------------------------
+text .n
+::tkdown::tags .n $FA
+::tkdown::body .n end "- a\n  - b\n        - c\n1. d" base code
+check "nested items keep their markers" [.n get 1.0 5.0] "•\ta\n•\tb\n•\tc\n1.\td\n"
+check "each item carries its depth tag" \
+    [lmap ln {1 2 3 4} { lsearch -inline -regexp [.n tag names $ln.0] {^td-list\d+$} }] \
+    {td-list0 td-list1 td-list2 td-list0}
+check "a depth jump clamps to one below the parent" \
+    [expr {"td-list3" in [.n tag names]}] 0
+check "each depth indents 18 px more, its text 20 px past the marker" \
+    [lmap t {td-list0 td-list1 td-list2} {
+        list [.n tag cget $t -lmargin1] [.n tag cget $t -lmargin2]
+    }] {{10 30} {28 48} {46 66}}
+::tkdown::refit .n -margin 5
+check "refit moves every depth with the margin" \
+    [list [.n tag cget td-list2 -lmargin1] [.n tag cget td-list2 -tabs]] {51 71}
+check "a nested item's text still styles" \
+    [catch {::tkdown::body .n end "- x\n  - **y**" base code}] 0
+check "inside it" [tagtext .n td-bold] y
 
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails

@@ -1,11 +1,10 @@
 #!/usr/bin/env wish9.0
 # A standalone demo of the tkdown renderer: one reading pane painting a
-# markdown sampler that exercises every form the module covers - ATX headings,
-# emphasis and code spans, a fenced block, a blockquote (split off with
-# segment_blockquotes and painted by the host, the idiom the man page
-# describes), GFM tables - one with mixed alignment and styled cells, one too
-# wide for the pane - and bullet and numbered flat lists. It loads only the
-# tkdown module.
+# markdown sampler through ::tkdown::body that exercises every form the
+# module covers - ATX and setext headings, emphasis, code spans and links, a
+# fenced block, a blockquote, a thematic break, GFM tables - one with mixed
+# alignment and styled cells, one too wide for the pane - and bullet and
+# numbered lists, one nested. It loads only the tkdown module.
 #
 # Run it with bare wish:   wish9.0 modules/tkdown/tkdown-demo.tcl
 #
@@ -47,8 +46,10 @@ size_fonts
 set SAMPLER {# tkdown sampler
 
 This pane is one Tk `text` widget painted by tkdown. Inline runs carry
-*italic*, **bold**, ***both***, and `code spans`; asterisks used as math,
-3 * 4, and names like snake_case stay literal.
+*italic*, **bold**, ***both***, `code spans` and links, both
+[named ones](https://www.tcl-lang.org) and bare ones such as
+https://wiki.tcl-lang.org; asterisks used as math, 3 * 4, and names like
+snake_case stay literal. Click a link to see its url in the title bar.
 
 ## A fenced block
 
@@ -60,9 +61,14 @@ proc greet {who} {
 
 ## A blockquote
 
-> The emit walk never paints quotes itself: the host splits them off with
-> segment_blockquotes and paints each de-quoted run under its own chrome,
-> the bar and indent you see on this paragraph.
+> A quote gets a bar on every line and the inset of td-quote; its ink is
+> the host's, laid through -quotetags. Inline *emphasis* still styles.
+> > A second marker inside a quote stays literal.
+
+---
+
+A setext heading
+----------------
 
 ## A GFM table
 
@@ -83,7 +89,11 @@ A table wider than the pane keeps its columns and wraps its longest cells, each 
 ### Lists
 
 - a bullet item with **bold** inside
-- a second bullet
+- a second bullet, with items under it
+  - a nested item
+    - and one nested deeper, long enough to wrap so the hanging indent
+      shows its continuation lining up with the text above
+  - back one level
 - a third, with a `code span`
 
 1. numbered items keep their source numbering
@@ -115,28 +125,22 @@ pack .body.t -side left -fill both -expand 1
 .body.t tag configure base -foreground #102a43
 .body.t tag configure fence -font DemoMono -background #eef2f6 \
     -lmargin1 18 -lmargin2 18 -rmargin 18 -spacing1 4 -spacing3 4
-.body.t tag configure quote -foreground #52606d \
-    -lmargin1 22 -lmargin2 22 -rmargin 22
+.body.t tag configure quote -foreground #52606d
+.body.t tag configure td-quotebar -foreground #9fb3c8
+.body.t tag configure td-link -foreground #0b69a3 -underline 1
+.body.t tag configure td-rule -background #c8d1dc
 # A grid's gridlines are the host's ink too.
 .body.t tag configure td-grid -background #c8d1dc
-
-# Paint the sampler through the layered splitters, fences first so a marker
-# inside a fence never reads as a quote, then quotes, prose through ::prose
-# (which handles headings, tables and lists itself). A code segment inserts
-# verbatim under host tags, the codeTags role ::tkdown::body gives the host.
-foreach seg [::tkdown::segment_code_fences $SAMPLER] {
-    lassign $seg kind text
-    if {$kind eq "code"} {
-        .body.t insert end "$text\n" {base fence}
-        .body.t insert end "\n" base
-        continue
-    }
-    foreach qseg [::tkdown::segment_blockquotes $text] {
-        lassign $qseg qkind qtext
-        set tags [expr {$qkind eq "quote" ? {base quote} : {base}}]
-        ::tkdown::prose .body.t end $qtext $tags
-    }
+::tkdown::refit .body.t -quotetags quote
+.body.t tag bind td-link <Enter> {.body.t configure -cursor hand2}
+.body.t tag bind td-link <Leave> {.body.t configure -cursor xterm}
+.body.t tag bind td-link <Button-1> {
+    wm title . "tkdown demo - [::tkdown::link_at .body.t @%x,%y]"
 }
+
+# One call paints the lot with the default emitters; fenced code goes in
+# under the host's own tags.
+::tkdown::body .body.t end $SAMPLER base {base fence}
 .body.t configure -state disabled
 
 wm title . "tkdown demo"

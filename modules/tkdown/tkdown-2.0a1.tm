@@ -2,16 +2,22 @@ package require Tcl 9
 package provide tkdown 2.0a1
 
 namespace eval ::tkdown {
-    namespace export parse_inline segment_tables segment_code_fences \
-        segment_blockquotes segment_lists table_to_markdown table_colwidths \
-        tags runs prose body refit forget unregister table_scan table_spotlight
+    namespace export parse_inline segment_code_fences segment_blockquotes \
+        segment_headings segment_rules segment_images segment_tables \
+        segment_lists table_to_markdown table_colwidths ensure_fonts tags \
+        runs prose body emit_prose emit_code emit_quote emit_table \
+        emit_image emit_rule refit forget unregister table_scan \
+        table_spotlight link_at link_scan
     # Emit state, one entry per registered widget: widget path -> {fonts
-    # margin copystyle quotetags image_cmd on_block tables nextid spot fittok},
-    # tables being id -> the table's entry (see the grid section), spot the
-    # lit table's id and fittok the pending re-fit's after token.
+    # margin copystyle quotetags image_cmd on_block tables nextid spot fittok
+    # links nextlink}, tables being id -> the table's entry (see the grid
+    # section), spot the lit table's id, fittok the pending re-fit's after
+    # token and links td-link<N> tag -> url.
     variable widgets [dict create]
     # table_colwidths' search state, keyed by a per-call id; see colwidths_memo.
     variable colmemo
+    # Numbers body's per-block marks.
+    variable blockseq 0
 }
 
 # tkdown - a pragmatic markdown renderer for a Tk text widget.
@@ -19,20 +25,23 @@ namespace eval ::tkdown {
 # tkdown parses a block of markdown text into structured segments and inline
 # runs, then paints those onto a text widget with the styling tags the emit
 # half owns. It is not a full CommonMark implementation: it covers the block
-# and inline forms a chat or transcript body actually carries - fenced code,
-# blockquotes, GFM pipe tables, ATX headings, flat lists, code spans, and
+# and inline forms a chat, transcript or notes file actually carries -
+# fenced code, blockquotes, GFM pipe tables, ATX and setext headings,
+# thematic breaks, image lines, nested lists, links, code spans, and
 # asterisk emphasis - and leaves the rest as literal text.
 #
 # The parse half (the segment_* splitters and parse_inline) is pure Tcl,
 # needs no Tk, and runs under a bare tclsh. The splitters are layered: each
-# sees a body the ones above it have already peeled, fences first, then
-# quotes, then tables; lists split inside the emit walk. segment_blockquotes
-# is parse-half only - the emit walk never calls it, and a host that wants
-# quotes styled splits with it and paints each de-quoted run itself, the way
-# it owns a code block's chrome. The emit half paints onto a widget
-# registered with `tags`, and every td-* tag it configures is font-only or
-# geometry-only. Colour always comes from the base tags the host stacks
-# underneath, so the module owns faces and layout and the host owns the ink.
+# sees a body the ones above it have already peeled. body's walk runs fences
+# first, then quotes, rules, image lines and tables, and paints what is left
+# as prose, whose emitter splits lists and lifts headings itself;
+# segment_headings is for a host that wants a document's headings as
+# segments of its own. Each block kind has a default emitter a host may
+# replace or switch off. The emit half paints onto a widget registered with
+# `tags`, and every td-* tag it configures is font-only or geometry-only.
+# Colour always comes from the base tags the host stacks underneath or from
+# td-* tags the host inks, so the module owns faces and layout and the host
+# owns the ink.
 
 # Split a body into ordered {kind text} segments, where kind is
 # "prose" or "code". A code segment is the content between a pair of triple
@@ -93,6 +102,156 @@ proc ::tkdown::segment_blockquotes {body} {
     if {[llength $q]}   { lappend segs [list quote  [join $q "\n"]] }
     return $segs
 }
+
+# A fence line, the same test segment_code_fences splits on: optional
+# leading whitespace, then three backticks.
+proc ::tkdown::fence_line {line} {
+    return [regexp {^\s*```} $line]
+}
+
+# A thematic-break line: three or more of one of "-", "*" or "_", spaces or
+# tabs allowed between them, nothing else on the line, indented at most three
+# spaces.
+proc ::tkdown::rule_line {line} {
+    if {![regexp {^ {0,3}[-*_]} $line]} { return 0 }
+    set bare [string map [list " " "" "\t" ""] $line]
+    return [regexp {^(-{3,}|\*{3,}|_{3,})$} $bare]
+}
+
+# If line is an ATX heading, return {level title}, else "". A heading is one
+# to six "#" at the start of the line and then a space or tab; the title is
+# the rest with any closing "#" run (one standing alone or after whitespace,
+# the CommonMark rule) and the surrounding whitespace stripped. "#5" and
+# "#######" are not headings.
+proc ::tkdown::atx_line {line} {
+    if {![regexp {^(#{1,6})[ \t]+(.*)$} $line -> marks title]} { return "" }
+    regsub {(^|[ \t])#+[ \t]*$} $title {} title
+    return [list [string length $marks] [string trim $title]]
+}
+
+# If lines[i+1] is a setext underline for lines[i], return its level (1 for
+# "===", 2 for "---"), else 0. The underline is three or more of one of the
+# two characters, contiguous, indented at most three spaces. The line above
+# must be non-blank and plain text: a "|" in it (a table row, so the line
+# under it is a delimiter row or a rule) and a line that is a quote, fence,
+# rule, ATX heading, list item or itself underline-shaped all rule it out.
+# Callers keep fenced lines away from here.
+proc ::tkdown::setext_level {lines i} {
+    if {$i < 0 || $i + 1 >= [llength $lines]} { return 0 }
+    set above [lindex $lines $i]
+    set under [lindex $lines [expr {$i + 1}]]
+    set shape {^ {0,3}(={3,}|-{3,})[ \t]*$}
+    if {![regexp $shape $under -> ul]} { return 0 }
+    if {[string trim $above] eq ""} { return 0 }
+    if {[string first "|" $above] >= 0} { return 0 }
+    if {[string match ">*" $above] || [::tkdown::fence_line $above]
+            || [::tkdown::rule_line $above] || [regexp $shape $above]
+            || [::tkdown::atx_line $above] ne ""
+            || [::tkdown::list_marker $above] ne ""} {
+        return 0
+    }
+    return [expr {[string index $ul 0] eq "=" ? 1 : 2}]
+}
+
+# Split a body into ordered {kind payload} segments, where kind is "heading"
+# (payload {level title}) or "normal" (payload raw text). A heading is an ATX
+# line (atx_line) or a setext pair, a line of text over its underline
+# (setext_level); only the one line directly above an underline becomes the
+# title. The title keeps its inline markdown for the inline pass. Lines
+# inside a ``` fence are never headings, and the fence lines themselves stay
+# in the normal text verbatim, so segment_code_fences still splits it.
+proc ::tkdown::segment_headings {body} {
+    set lines [split $body "\n"]
+    set n [llength $lines]
+    set segs [list]
+    set buf  [list]
+    set incode 0
+    for {set i 0} {$i < $n} {incr i} {
+        set line [lindex $lines $i]
+        set head ""
+        if {[::tkdown::fence_line $line]} {
+            set incode [expr {!$incode}]
+        } elseif {!$incode} {
+            set head [::tkdown::atx_line $line]
+            if {$head eq ""} {
+                set lvl [::tkdown::setext_level $lines $i]
+                if {$lvl} {
+                    set head [list $lvl [string trim $line]]
+                    incr i
+                }
+            }
+        }
+        if {$head eq ""} {
+            lappend buf $line
+            continue
+        }
+        if {[llength $buf]} {
+            lappend segs [list normal [join $buf "\n"]]
+            set buf [list]
+        }
+        lappend segs [list heading $head]
+    }
+    if {[llength $buf]} { lappend segs [list normal [join $buf "\n"]] }
+    return $segs
+}
+
+# Split a run into ordered {kind payload} segments, where kind is "rule"
+# (payload empty) for a thematic-break line (rule_line) or "normal" (payload
+# raw text). A "---" that underlines the line above it (setext_level) is a
+# heading's, not a rule, and a fenced line is never a rule.
+proc ::tkdown::segment_rules {text} {
+    set lines [split $text "\n"]
+    set n [llength $lines]
+    set segs [list]
+    set buf  [list]
+    set incode 0
+    for {set i 0} {$i < $n} {incr i} {
+        set line [lindex $lines $i]
+        if {[::tkdown::fence_line $line]} {
+            set incode [expr {!$incode}]
+        } elseif {!$incode && [::tkdown::rule_line $line]
+                && ![::tkdown::setext_level $lines [expr {$i - 1}]]} {
+            if {[llength $buf]} {
+                lappend segs [list normal [join $buf "\n"]]
+                set buf [list]
+            }
+            lappend segs [list rule ""]
+            continue
+        }
+        lappend buf $line
+    }
+    if {[llength $buf]} { lappend segs [list normal [join $buf "\n"]] }
+    return $segs
+}
+
+# Split a run into ordered {kind payload} segments, where kind is "image"
+# (payload {alt path}) for a line holding nothing but one ![alt](path), an
+# optional quoted title after the path, or "normal" (payload raw text). An
+# image sharing its line with other text is left for the inline pass, and a
+# fenced line is never an image.
+proc ::tkdown::segment_images {text} {
+    set segs [list]
+    set buf  [list]
+    set incode 0
+    foreach line [split $text "\n"] {
+        if {[::tkdown::fence_line $line]} {
+            set incode [expr {!$incode}]
+        } elseif {!$incode && [regexp \
+                {^\s*!\[([^\]]*)\]\(\s*([^\s()]+)(?:\s+"[^"]*")?\s*\)\s*$} \
+                $line -> alt path]} {
+            if {[llength $buf]} {
+                lappend segs [list normal [join $buf "\n"]]
+                set buf [list]
+            }
+            lappend segs [list image [list $alt $path]]
+            continue
+        }
+        lappend buf $line
+    }
+    if {[llength $buf]} { lappend segs [list normal [join $buf "\n"]] }
+    return $segs
+}
+
 
 # Split a prose run into ordered {kind payload} segments, where kind is
 # "normal" (payload is raw text) or "table" (payload is a parsed GFM pipe
@@ -527,37 +686,76 @@ proc ::tkdown::colwidths_next {memo j cur max} {
     return $best
 }
 
+# If line opens a list item, return {depth marker text}, else "". A marker is
+# "-", "*" or "+" (marker "•") or ASCII digits and one dot (marker the digits
+# and the dot, "3.", the source numbering kept), then one space; text is the
+# rest of the line, still markdown. Depth counts the indentation before the
+# marker, two spaces or one tab per level. "tcl 9.0" and "1.2.3" open
+# nothing, and neither does a thematic break such as "- - -".
+proc ::tkdown::list_marker {line} {
+    if {![regexp {^([ \t]*)([-*+]|[0-9]+\.) (.*)$} $line -> ind mk rest]} {
+        return ""
+    }
+    if {[::tkdown::rule_line $line]} { return "" }
+    set tabs [regexp -all {\t} $ind]
+    set width [expr {[string length $ind] - $tabs + 2 * $tabs}]
+    if {$mk in {- * +}} { set mk "•" }
+    return [list [expr {$width / 2}] $mk $rest]
+}
+
 # Split a normal (table-free) run into ordered {kind payload} segments, where
-# kind is "normal" (payload is raw text) or "list" (payload is a flat list of
-# items). A list is a maximal run of lines each opening with "- ", "* ", or
-# "N. " (ASCII digits, one dot, one space) at the very start of the line; each
-# such line is one item. A list item's payload is {num text}: num is "" for a
-# bullet ("- "/"* ") or the item's own digits for an ordered ("N. ") item, and
-# text is the rest of the line, still markdown for the inline pass. Flat only:
-# a leading-space (indented) or nested marker matches nothing here and stays in
-# a normal segment, a documented limit.
+# kind is "normal" (payload is raw text) or "list" (payload is the items in
+# source order, each {depth marker text} as list_marker reads it). A list is
+# a run of item lines and the lines that belong to them:
+#   - a non-blank line that is not itself a marker, directly under an item or
+#     under that item's earlier continuation, joins the item's text after one
+#     space, its own indentation dropped (lazy continuation);
+#   - blank lines followed by another marker, at any depth, are dropped and
+#     the list goes on; blank lines followed by anything else end it and stay
+#     in the normal text that follows;
+#   - a ``` fence line ends the list, and fenced lines are never items or
+#     continuations.
 proc ::tkdown::segment_lists {text} {
+    set lines [split $text "\n"]
+    set n [llength $lines]
     set segs  [list]
     set buf   [list]   ;# accumulating normal lines
-    set items [list]   ;# accumulating {num text} list items
-    foreach line [split $text "\n"] {
-        if {[regexp {^[-*] (.*)$} $line -> rest]} {
-            set num ""
-        } elseif {[regexp {^([0-9]+)\. (.*)$} $line -> num rest]} {
-            # num and rest set by the match
-        } else {
-            if {[llength $items]} {
-                lappend segs [list list $items]
-                set items [list]
+    set items [list]   ;# accumulating {depth marker text} list items
+    set incode 0
+    for {set i 0} {$i < $n} {incr i} {
+        set line [lindex $lines $i]
+        set fence [::tkdown::fence_line $line]
+        if {$fence} { set incode [expr {!$incode}] }
+        if {!$fence && !$incode} {
+            set item [::tkdown::list_marker $line]
+            if {$item ne ""} {
+                if {[llength $buf]} {
+                    lappend segs [list normal [join $buf "\n"]]
+                    set buf [list]
+                }
+                lappend items $item
+                continue
             }
-            lappend buf $line
-            continue
+            if {[llength $items]} {
+                set more [string trim $line]
+                if {$more ne ""} {
+                    set have [lindex $items end 2]
+                    lset items end 2 [expr {$have eq "" ? $more : "$have $more"}]
+                    continue
+                }
+                set j $i
+                while {$j < $n && [string trim [lindex $lines $j]] eq ""} { incr j }
+                if {$j < $n && [::tkdown::list_marker [lindex $lines $j]] ne ""} {
+                    set i [expr {$j - 1}]
+                    continue
+                }
+            }
         }
-        if {[llength $buf]} {
-            lappend segs [list normal [join $buf "\n"]]
-            set buf [list]
+        if {[llength $items]} {
+            lappend segs [list list $items]
+            set items [list]
         }
-        lappend items [list $num $rest]
+        lappend buf $line
     }
     if {[llength $buf]}   { lappend segs [list normal [join $buf "\n"]] }
     if {[llength $items]} { lappend segs [list list $items] }
@@ -565,12 +763,17 @@ proc ::tkdown::segment_lists {text} {
 }
 
 # Parse one prose run into styled inline runs. Returns an ordered list of
-# {style chunk} pairs; style is one of plain, code, bold, italic, bolditalic,
-# and chunk is the text to display with the markdown markers removed. Adjacent
-# plain runs are coalesced. Callers strip fenced code and blockquotes first,
-# so this never sees a ``` fence. The rules:
-#   - code spans (one or two backticks) win over emphasis, so asterisks inside
-#     `code` are never styled;
+# runs, each {style chunk} or, for a link, {link chunk url}; style is one of
+# plain, code, bold, italic, bolditalic, link, and chunk is the text to
+# display with the markdown markers removed. Adjacent plain runs are
+# coalesced. Callers strip fenced code and blockquotes first, so this never
+# sees a ``` fence. The rules:
+#   - code spans (one or two backticks) win over everything else, so
+#     asterisks, links and URLs inside `code` stay literal;
+#   - [text](url) is a link whose chunk is the raw text between the brackets,
+#     emphasis markers and all; a bare http:// or https:// URL, or one in
+#     <angle brackets>, is a link whose chunk is the URL itself;
+#   - an inline ![alt](path) shows its alt text in the surrounding style;
 #   - emphasis is asterisks only (*, **, ***): underscores stay literal, so
 #     snake_case, __init__ and the like are left alone;
 #   - an opener needs a non-space char after it and a closer a non-space char
@@ -579,11 +782,13 @@ proc ::tkdown::segment_lists {text} {
 #     other backslash is kept verbatim (paths and regex carry many).
 proc ::tkdown::parse_inline {text} {
     # Escapes go to private-use sentinels so the marker scans never meet them;
-    # any stray sentinel in the raw input is dropped first.
+    # any stray sentinel in the raw input is dropped first. Links are lifted
+    # out to a fourth sentinel before the emphasis scan (inline_links).
     set bt \uE000 ;# escaped backtick  -> literal `
     set st \uE001 ;# escaped asterisk  -> literal *
-    set bs \uE002 ;# escaped backslash -> literal \
-    set text [string map [list $bt {} $st {} $bs {}] $text]
+    set bs \uE002 ;# escaped backslash -> literal backslash
+    set lk \uE003 ;# a link held aside, in order
+    set text [string map [list $bt {} $st {} $bs {} $lk {}] $text]
     set text [string map [list {\`} $bt {\*} $st {\\} $bs] $text]
 
     # Pass A: peel off code spans; the gaps between them are prose.
@@ -621,20 +826,45 @@ proc ::tkdown::parse_inline {text} {
     }
     if {$buf ne ""} { lappend segs prose $buf }
 
-    # Pass B: emphasis within each prose gap; unescape every emitted chunk.
+    # Pass B: links out, emphasis within each prose gap, links back in where
+    # their sentinels landed; unescape every emitted chunk.
     set runs [list]
     foreach {kind chunk} $segs {
         if {$kind eq "code"} {
             lappend runs [list code [::tkdown::inline_unescape $chunk]]
             continue
         }
+        lassign [::tkdown::inline_links $chunk] chunk links
+        set k 0
         foreach run [::tkdown::inline_emphasis $chunk] {
             lassign $run style stext
-            lappend runs [list $style [::tkdown::inline_unescape $stext]]
+            set first 1
+            foreach part [split $stext $lk] {
+                if {!$first} {
+                    lassign [lindex $links $k] ltext url
+                    lappend runs [list link [::tkdown::inline_unescape $ltext] \
+                        [::tkdown::inline_unescape $url]]
+                    incr k
+                }
+                if {$part ne ""} {
+                    lappend runs [list $style [::tkdown::inline_unescape $part]]
+                }
+                set first 0
+            }
         }
     }
-    return $runs
+    set out [list]
+    foreach run $runs {
+        if {[lindex $run 0] eq "plain" && [llength $out]
+                && [lindex $out end 0] eq "plain"} {
+            lset out end 1 "[lindex $out end 1][lindex $run 1]"
+        } else {
+            lappend out $run
+        }
+    }
+    return $out
 }
+
 
 # Index of the closing backtick run of exactly `fence` backticks at or after
 # `from`, or -1. Runs of a different length are literal content, so skipped.
@@ -715,15 +945,136 @@ proc ::tkdown::inline_unescape {s} {
     return [string map [list \uE000 "`" \uE001 "*" \uE002 "\\"] $s]
 }
 
+# Lift the links out of one prose gap. Returns {s links}: s is the gap with
+# each link replaced by the \uE003 sentinel and each inline image by its alt
+# text (asterisks escaped, so the alt reads literally), and links is the
+# {text url} pairs in sentinel order. A bare URL must not follow a letter or
+# digit, and loses a trailing punctuation run (url_trim).
+proc ::tkdown::inline_links {s} {
+    set out ""
+    set links [list]
+    set i 0
+    set n [string length $s]
+    while {$i < $n} {
+        set ch [string index $s $i]
+        set rest [string range $s $i end]
+        if {$ch eq "!" && [string index $s [expr {$i + 1}]] eq "\["} {
+            set hit [::tkdown::inline_link_at $s [expr {$i + 1}]]
+            if {$hit ne ""} {
+                lassign $hit alt url next
+                append out [string map [list * \uE001] $alt]
+                set i $next
+                continue
+            }
+        } elseif {$ch eq "\["} {
+            set hit [::tkdown::inline_link_at $s $i]
+            if {$hit ne ""} {
+                lassign $hit ltext url next
+                if {$ltext eq ""} { set ltext $url }
+                lappend links [list $ltext $url]
+                append out \uE003
+                set i $next
+                continue
+            }
+        } elseif {$ch eq "<" && [regexp {^<(https?://[^\s<>]+)>} $rest m url]} {
+            lappend links [list $url $url]
+            append out \uE003
+            incr i [string length $m]
+            continue
+        } elseif {$ch eq "h" && [regexp {^https?://[^\s<]+} $rest m]
+                && ![string is alnum -strict [string index $s [expr {$i - 1}]]]} {
+            set url [::tkdown::url_trim $m]
+            if {[regexp {://.} $url]} {
+                lappend links [list $url $url]
+                append out \uE003
+                incr i [string length $url]
+                continue
+            }
+        }
+        append out $ch
+        incr i
+    }
+    return [list $out $links]
+}
+
+# If a [text](dest) link starts at index i of s, return {text url next},
+# where next is the index just past its closing paren; else "". Brackets in
+# the text and parens in the destination nest. The destination is a URL,
+# optionally in <angle brackets>, optionally followed by a quoted title,
+# which is dropped; an empty URL or anything else after it is no link.
+proc ::tkdown::inline_link_at {s i} {
+    set n [string length $s]
+    set depth 0
+    for {set j $i} {$j < $n} {incr j} {
+        set c [string index $s $j]
+        if {$c eq "\["} { incr depth }
+        if {$c eq "\]" && [incr depth -1] == 0} break
+    }
+    if {$j >= $n || [string index $s [expr {$j + 1}]] ne "("} { return "" }
+    set depth 0
+    for {set k [expr {$j + 1}]} {$k < $n} {incr k} {
+        set c [string index $s $k]
+        if {$c eq "("} { incr depth }
+        if {$c eq ")" && [incr depth -1] == 0} break
+    }
+    if {$k >= $n} { return "" }
+    set dest [string trim [string range $s [expr {$j + 2}] [expr {$k - 1}]]]
+    if {![regexp {^(<[^<>]*>|\S+)(?:\s+("[^"]*"|'[^']*'))?$} $dest -> url]} {
+        return ""
+    }
+    set url [string trim $url "<>"]
+    if {$url eq ""} { return "" }
+    return [list [string range $s [expr {$i + 1}] [expr {$j - 1}]] $url \
+        [expr {$k + 1}]]
+}
+
+# A bare URL with its trailing punctuation dropped, GFM's autolink trim: any
+# run of ? ! . , : ; * _ ~ ' " at the end goes, and a closing paren goes
+# while the URL holds more ")" than "(", so (see https://x.org/a) loses the
+# paren and https://en.wikipedia.org/wiki/Tcl_(language) keeps it.
+proc ::tkdown::url_trim {url} {
+    while {$url ne ""} {
+        set c [string index $url end]
+        if {[string first $c {?!.,:;*_~'"}] >= 0
+                || ($c eq ")" && [regexp -all {\)} $url] > [regexp -all {\(} $url])} {
+            set url [string range $url 0 end-1]
+            continue
+        }
+        break
+    }
+    return $url
+}
+
+
+# The SV* reading faces, derived from TkTextFont and TkFixedFont and created
+# once per interp, as the fonts dict tags wants. A host with faces of its
+# own passes those to tags instead.
+proc ::tkdown::ensure_fonts {} {
+    if {"SVBody" ni [font names]} {
+        set text [font actual TkTextFont]
+        set mono [font actual TkFixedFont]
+        font create SVBody           {*}$text
+        font create SVBodyBold       {*}$text -weight bold
+        font create SVBodyItalic     {*}$text -slant italic
+        font create SVBodyBoldItalic {*}$text -weight bold -slant italic
+        font create SVMono           {*}$mono
+        font create SVMonoBold       {*}$mono -weight bold
+    }
+    return [dict create body SVBody bold SVBodyBold italic SVBodyItalic \
+        bolditalic SVBodyBoldItalic mono SVMono]
+}
+
 # Register a text widget for emission and configure the td-* faces on it.
 # fonts is a dict of Tk font names: body bold italic bolditalic mono are
 # required; h1 h2 h3 are optional heading faces falling back to bold. Extra
 # keys are kept but nothing draws with them. The options are those refit
 # re-sets: -margin {left right} (or one n for both) is the host's base margin
-# in screen distance, -copystyle the ttk style of a grid's copy button, and
-# -quotetags, -image_cmd and -on_block are kept for the block emitters.
-# Registration opens the widget's table registry; the entry dies with the
-# widget. Registering a widget again keeps the tables it already holds.
+# in screen distance, -copystyle the ttk style of a grid's copy button,
+# -quotetags the tags the quote emitter lays over a quote, -image_cmd the
+# command turning an image path into a Tk image, -on_block the command told
+# of each block body paints. Registration opens the widget's table and link
+# registries; the entry dies with the widget. Registering a widget again
+# keeps the tables and links it already holds.
 proc ::tkdown::tags {w fonts args} {
     variable widgets
     foreach k {body bold italic bolditalic mono} {
@@ -733,16 +1084,19 @@ proc ::tkdown::tags {w fonts args} {
     }
     set reg [dict create fonts $fonts margin {0 0} copystyle Copy.TButton \
         quotetags {} image_cmd {} on_block {} \
-        tables [dict create] nextid 0 spot "" fittok ""]
+        tables [dict create] nextid 0 spot "" fittok "" \
+        links [dict create] nextlink 0]
     if {[dict exists $widgets $w]} {
-        foreach k {tables nextid spot fittok} {
+        foreach k {tables nextid spot fittok links nextlink} {
             dict set reg $k [dict get $widgets $w $k]
         }
     }
     set reg [::tkdown::options $w $reg $args]
     dict set widgets $w $reg
-    # Later-configured tags win on -font where they stack: headings first so
+    # Later-configured tags win on -font where they stack: a link first so a
+    # link inside a heading keeps the heading's face, headings next so
     # emphasis spans inside a heading still restyle.
+    $w tag configure td-link -font [dict get $fonts body]
     foreach lvl {h1 h2 h3} {
         set f [expr {[dict exists $fonts $lvl]
             ? [dict get $fonts $lvl] : [dict get $fonts bold]}]
@@ -752,6 +1106,13 @@ proc ::tkdown::tags {w fonts args} {
     $w tag configure td-italic     -font [dict get $fonts italic]
     $w tag configure td-bolditalic -font [dict get $fonts bolditalic]
     $w tag configure td-code       -font [dict get $fonts mono]
+    # A rule is one line of a face two pixels tall; its ink is td-rule's
+    # -background, which the host sets.
+    if {"TdRule" ni [font names]} {
+        font create TdRule -size -2 \
+            -family [font actual [dict get $fonts body] -family]
+    }
+    $w tag configure td-rule -font TdRule
     ::tkdown::margins $w
     # A grid's frame, cells and copy button share one bindtag per pane: the
     # wheel goes on to w with its delta untouched (a cell would otherwise
@@ -799,19 +1160,29 @@ proc ::tkdown::options {w reg opts} {
     return $reg
 }
 
-# The geometry tags, offset from the host's margin. td-list's lmargin1 sets
-# the marker 10 px in; lmargin2 sets item text (and any wrapped
-# continuation) a marker-width further, and the tab stop there lands the
-# text after the marker. td-quote insets a quote block past its bar. A grid
-# sits at the margin itself, and its width is capped by both margins.
+# The geometry tags, offset from the host's margin. A list item at depth d
+# carries td-list and td-list<d>: the marker sits 10 px in plus 18 px a
+# level, and the item text (and any wrapped continuation) 20 px past that.
+# td-quote insets a quote block past its bar. A grid sits at the margin
+# itself, and its width is capped by both margins.
 proc ::tkdown::margins {w} {
-    variable widgets
-    lassign [dict get $widgets $w margin] l r
-    $w tag configure td-list -lmargin1 [expr {$l + 10}] \
-        -lmargin2 [expr {$l + 30}] -tabs [expr {$l + 30}] -rmargin $r
+    ::tkdown::list_indent $w td-list 0
+    foreach tag [$w tag names] {
+        if {[regexp {^td-list(\d+)$} $tag -> d]} {
+            ::tkdown::list_indent $w $tag $d
+        }
+    }
+    lassign [dict get [set ::tkdown::widgets] $w margin] l r
     $w tag configure td-quote -lmargin1 [expr {$l + 14}] \
         -lmargin2 [expr {$l + 14}] -rmargin $r
     $w tag configure td-tblwin -lmargin1 $l -lmargin2 $l -rmargin $r
+}
+
+proc ::tkdown::list_indent {w tag depth} {
+    lassign [dict get [set ::tkdown::widgets] $w margin] l r
+    set mark [expr {$l + 10 + 18 * $depth}]
+    $w tag configure $tag -lmargin1 $mark -lmargin2 [expr {$mark + 20}] \
+        -tabs [expr {$mark + 20}] -rmargin $r
 }
 
 # Drop the widget from the registry, its grids and their bindings with it.
@@ -826,58 +1197,160 @@ proc ::tkdown::unregister {w} {
 
 # Insert one prose run's inline spans at idx. Each styled chunk stacks its
 # td-* face over baseTags, so only the -font changes and the host's colour
-# and margins hold.
+# and margins hold. A link's text also carries td-link, for the host's ink
+# and bindings, and a tag of its own, td-link<N>, which the registry maps to
+# its url (link_at, link_scan).
 proc ::tkdown::runs {w idx text baseTags} {
+    variable widgets
     foreach run [::tkdown::parse_inline $text] {
-        lassign $run style chunk
+        lassign $run style chunk url
         set tags $baseTags
         switch -- $style {
             code       { lappend tags td-code }
             bold       { lappend tags td-bold }
             italic     { lappend tags td-italic }
             bolditalic { lappend tags td-bolditalic }
+            link {
+                set n [dict get $widgets $w nextlink]
+                dict set widgets $w nextlink [incr n]
+                dict set widgets $w links td-link$n $url
+                lappend tags td-link td-link$n
+            }
         }
         $w insert $idx $chunk $tags
     }
 }
 
-# Insert a prose-or-table run at idx, closed by suffix (a rendering concern,
-# passed rather than parsed). A run with no GFM pipe table goes straight to
-# the heading-and-inline pass; a run carrying one is split by segment_tables
-# and rendered piecewise, each table as a grid (emit_table).
+# Insert a prose run at idx through the prose emitter, closed by suffix (a
+# rendering concern, passed rather than parsed).
 proc ::tkdown::prose {w idx text baseTags {suffix "\n\n"}} {
-    set segs [::tkdown::segment_tables $text]
-    set has_table 0
-    foreach s $segs { if {[lindex $s 0] eq "table"} { set has_table 1; break } }
-    if {!$has_table} {
-        ::tkdown::emit_normal $w $idx $text $baseTags
-    } else {
-        foreach s $segs {
-            lassign $s kind payload
-            if {$kind eq "table"} {
-                ::tkdown::emit_table $w $idx $payload $baseTags
-            } else {
-                ::tkdown::emit_normal $w $idx $payload $baseTags
-            }
-        }
-    }
+    ::tkdown::emit_prose $w $idx $text $baseTags
     if {$suffix ne ""} { $w insert $idx $suffix $baseTags }
 }
 
-# Insert a fenced body at idx: prose segments through prose (headings and
-# tables included), fenced code verbatim, one closing newline under baseTags.
+# Paint a markdown body at idx, one block at a time, then one closing
+# newline under baseTags. Fenced code is split off first, then from each
+# prose run in turn quotes, rules, image lines and tables; what is left is
+# prose. Each block goes to its kind's emitter: emitters maps a kind (prose
+# code quote table image rule) to a command, a kind it leaves out to
+# ::tkdown::emit_<kind>, and a kind it maps to "" to nothing, so that kind
+# is never split out and its lines reach the next splitter, and at last the
+# prose emitter, as written. The emitters are called as
+#   prose w idx text baseTags      code  w idx text codeTags
+#   quote w idx text baseTags      table w idx payload baseTags
+#   image w idx alt path baseTags  rule  w idx baseTags
+# with a quote's text de-quoted and a table's payload segment_tables'.
 # Code goes in under codeTags, named by the host outright, because a code
 # block's chrome (margins, ink) is host styling, not a tkdown face.
-proc ::tkdown::body {w idx text baseTags codeTags} {
-    foreach seg [::tkdown::segment_code_fences $text] {
+proc ::tkdown::body {w idx text baseTags codeTags {emitters {}}} {
+    set em [::tkdown::emitters $emitters]
+    set code [dict get $em code]
+    set segs [expr {$code eq "" ? [list [list prose $text]]
+        : [::tkdown::segment_code_fences $text]}]
+    foreach seg $segs {
         lassign $seg kind chunk
         if {$kind eq "code"} {
-            $w insert $idx "$chunk\n" $codeTags
+            ::tkdown::block $w $idx code $chunk $baseTags \
+                [list {*}$code $w $idx $chunk $codeTags]
         } else {
-            ::tkdown::prose $w $idx $chunk $baseTags "\n"
+            ::tkdown::walk $w $idx $chunk $baseTags $em {quote rule image table}
         }
     }
     $w insert $idx "\n" $baseTags
+}
+
+# The emitters dict with every kind filled in.
+proc ::tkdown::emitters {given} {
+    set kinds {prose code quote table image rule}
+    dict for {kind cmd} $given {
+        if {$kind ni $kinds} {
+            error "tkdown: unknown block kind \"$kind\": want [join $kinds {, }]"
+        }
+    }
+    set em [dict create]
+    foreach kind $kinds {
+        dict set em $kind [dict getdef $given $kind ::tkdown::emit_$kind]
+    }
+    if {[dict get $em prose] eq ""} {
+        error "tkdown: the prose emitter cannot be empty"
+    }
+    return $em
+}
+
+# Split a prose run by the first of stages, painting each block it splits
+# off and handing each normal run to the rest; with no stages left, the
+# run is one prose block. An empty run is a blank line, which a splitter
+# would return no segments for, so it goes straight to prose.
+proc ::tkdown::walk {w idx text baseTags em stages} {
+    if {![llength $stages] || $text eq ""} {
+        ::tkdown::block $w $idx prose $text $baseTags \
+            [list {*}[dict get $em prose] $w $idx $text $baseTags]
+        return
+    }
+    set rest [lassign $stages kind]
+    set cmd [dict get $em $kind]
+    if {$cmd eq ""} {
+        tailcall ::tkdown::walk $w $idx $text $baseTags $em $rest
+    }
+    set split [dict get {quote segment_blockquotes rule segment_rules
+        image segment_images table segment_tables} $kind]
+    foreach seg [::tkdown::$split $text] {
+        lassign $seg k payload
+        switch -- $k {
+            normal {
+                ::tkdown::walk $w $idx $payload $baseTags $em $rest
+            }
+            quote {
+                ::tkdown::block $w $idx quote $payload $baseTags \
+                    [list {*}$cmd $w $idx $payload $baseTags]
+            }
+            rule {
+                ::tkdown::block $w $idx rule "" $baseTags \
+                    [list {*}$cmd $w $idx $baseTags]
+            }
+            image {
+                lassign $payload alt path
+                ::tkdown::block $w $idx image $alt $baseTags \
+                    [list {*}$cmd $w $idx $alt $path $baseTags]
+            }
+            table {
+                ::tkdown::block $w $idx table \
+                    [::tkdown::table_to_markdown $payload] $baseTags \
+                    [list {*}$cmd $w $idx $payload $baseTags]
+            }
+        }
+    }
+}
+
+# Paint one block by running cmd, then end its line: a prose block always
+# (a prose emitter leaves its last line open), any other only when its
+# emitter left it open. Then -on_block hears {kind start end text}, start
+# and end bounding everything the block inserted, end exclusive; text is
+# the block's text (a table's as GFM, an image's alt, a rule's empty).
+proc ::tkdown::block {w idx kind text baseTags cmd} {
+    variable widgets
+    variable blockseq
+    set m td#block[incr blockseq]
+    $w mark set $m [::tkdown::insert_at $w $idx]
+    $w mark gravity $m left
+    {*}$cmd
+    set at [::tkdown::insert_at $w $idx]
+    if {$kind eq "prose" || [$w compare $at != "$at linestart"]} {
+        $w insert $idx "\n" $baseTags
+        set at [::tkdown::insert_at $w $idx]
+    }
+    set start [$w index $m]
+    $w mark unset $m
+    set on [dict get $widgets $w on_block]
+    if {$on ne ""} { {*}$on $kind $start $at $text }
+}
+
+# The index where an insert at idx lands: idx itself, or the last newline's
+# index when idx is end.
+proc ::tkdown::insert_at {w idx} {
+    set at [$w index $idx]
+    if {[$w compare $at == end]} { set at [$w index end-1c] }
+    return $at
 }
 
 # Re-set any of tags' options, then bring the pane up to date with them:
@@ -921,10 +1394,11 @@ proc ::tkdown::refit_run {w} {
     }
 }
 
-# Drop w's tables: destroy every grid, unset every tbl#m<N> mark, empty the
-# registry. A `delete 1.0 end` alone would leave the marks behind, piled at
-# 1.0 across reloads. Registration survives; call before a re-render, and
-# the table ids start again from one.
+# Drop w's tables and links: destroy every grid, unset every tbl#m<N> mark,
+# delete every td-link<N> tag, empty both registries. A `delete 1.0 end`
+# alone would leave the marks behind, piled at 1.0 across reloads.
+# Registration survives; call before a re-render. Table and link numbers
+# carry on rather than start again, so a number never names two things.
 proc ::tkdown::forget {w} {
     variable widgets
     if {![dict exists $widgets $w]} return
@@ -937,20 +1411,56 @@ proc ::tkdown::forget {w} {
         foreach m [$w mark names] {
             if {[string match tbl#m* $m]} { $w mark unset $m }
         }
+        set tags [dict keys [dict get $widgets $w links]]
+        if {[llength $tags]} { $w tag delete {*}$tags }
     }
     dict set widgets $w tables [dict create]
-    dict set widgets $w nextid 0
+    dict set widgets $w links [dict create]
     dict set widgets $w spot ""
     dict set widgets $w fittok ""
 }
 
-# One normal (table-free) run, split into peer blocks that re-join on the
-# newlines the splits consumed: a list run (its own td-list hanging indent),
-# any ATX heading line lifted out under td-h1/h2/h3 (levels 4-6 render as h3),
-# and plain text, inline spans parsed inside each. A heading is a #{1,6} run
-# plus a space opening a line. A run with no list and no heading emits
-# byte-for-byte as one inline pass.
-proc ::tkdown::emit_normal {w idx text baseTags} {
+# The url of the link under idx, or "".
+proc ::tkdown::link_at {w idx} {
+    variable widgets
+    if {![dict exists $widgets $w]} { return "" }
+    set links [dict get $widgets $w links]
+    foreach tag [$w tag names $idx] {
+        if {[dict exists $links $tag]} { return [dict get $links $tag] }
+    }
+    return ""
+}
+
+# Search the links' urls, which the text does not show unless the link's
+# text is its url. One hit per link, in document order: {index url}, index
+# being the start of the link's text. A link whose text is gone leaves the
+# registry here.
+proc ::tkdown::link_scan {w needle nocase} {
+    variable widgets
+    if {![dict exists $widgets $w] || $needle eq ""} { return {} }
+    if {$nocase} { set needle [string tolower $needle] }
+    set out [list]
+    dict for {tag url} [dict get $widgets $w links] {
+        set at [lindex [$w tag ranges $tag] 0]
+        if {$at eq ""} {
+            $w tag delete $tag
+            dict unset widgets $w links $tag
+            continue
+        }
+        set hay [expr {$nocase ? [string tolower $url] : $url}]
+        if {[string first $needle $hay] >= 0} { lappend out [list $at $url] }
+    }
+    return [lsort -command [list ::tkdown::mark_order $w] $out]
+}
+
+# The default prose emitter: one prose run split into peer blocks that
+# re-join on the newlines the splits consumed. A list run paints through
+# emit_list; a heading line, ATX (atx_line) or a line over its setext
+# underline (setext_level), lifts out under td-h1/h2/h3 (levels 4-6 render
+# as h3); the rest is plain text, inline spans parsed inside each. A run
+# with no list and no heading emits byte-for-byte as one inline pass. The
+# last line is left open.
+proc ::tkdown::emit_prose {w idx text baseTags} {
     set blocks [list]
     foreach seg [::tkdown::segment_lists $text] {
         lassign $seg kind payload
@@ -958,19 +1468,28 @@ proc ::tkdown::emit_normal {w idx text baseTags} {
             lappend blocks [list list $payload]
             continue
         }
+        set lines [split $payload "\n"]
         set buf [list]
-        foreach line [split $payload "\n"] {
-            if {[regexp {^(#{1,6}) (.*)$} $line -> marks rest]} {
-                if {[llength $buf]} {
-                    lappend blocks [list text [join $buf "\n"]]
-                    set buf [list]
+        for {set i 0} {$i < [llength $lines]} {incr i} {
+            set line [lindex $lines $i]
+            set head [::tkdown::atx_line $line]
+            if {$head eq ""} {
+                set lvl [::tkdown::setext_level $lines $i]
+                if {$lvl} {
+                    set head [list $lvl [string trim $line]]
+                    incr i
                 }
-                set lvl [string length $marks]
-                if {$lvl > 3} { set lvl 3 }
-                lappend blocks [list td-h$lvl $rest]
-            } else {
-                lappend buf $line
             }
+            if {$head eq ""} {
+                lappend buf $line
+                continue
+            }
+            if {[llength $buf]} {
+                lappend blocks [list text [join $buf "\n"]]
+                set buf [list]
+            }
+            lassign $head lvl title
+            lappend blocks [list td-h[expr {min($lvl, 3)}] $title]
         }
         if {[llength $buf]} { lappend blocks [list text [join $buf "\n"]] }
     }
@@ -979,7 +1498,7 @@ proc ::tkdown::emit_normal {w idx text baseTags} {
         lassign $b kind chunk
         if {!$first} { $w insert $idx "\n" $baseTags }
         switch -- $kind {
-            list    { ::tkdown::emit_list_items $w $idx $chunk $baseTags }
+            list    { ::tkdown::emit_list $w $idx $chunk $baseTags }
             text    { ::tkdown::runs $w $idx $chunk $baseTags }
             default { ::tkdown::runs $w $idx $chunk [concat $baseTags [list $kind]] }
         }
@@ -987,23 +1506,77 @@ proc ::tkdown::emit_normal {w idx text baseTags} {
     }
 }
 
-# Emit one parsed list as consecutive logical lines under td-list, its hanging
-# indent. Each item is a marker (a bullet glyph for an unordered item, the
-# item's own number and a dot for an ordered one) then a tab then the item
-# text through the inline-run path, so markdown inside an item still styles.
-# The tab lands the text at td-list's lmargin2, aligning it with the wrap.
-proc ::tkdown::emit_list_items {w idx items baseTags} {
-    set tags [concat $baseTags [list td-list]]
-    set first 1
+# Emit one parsed list as consecutive logical lines, each item under td-list
+# and td-list<depth>, its hanging indent: the marker, then a tab, then the
+# item text through the inline-run path, so markdown inside an item still
+# styles. An item deeper than one level below the item before it is drawn
+# one level below it.
+proc ::tkdown::emit_list {w idx items baseTags} {
+    set prev -1
+    set tags {}
     foreach item $items {
-        lassign $item num text
-        if {!$first} { $w insert $idx "\n" $tags }
-        # A plain if, not expr's ?: - expr would coerce "3." to the float 3.0.
-        if {$num eq ""} { set marker "•" } else { set marker "$num." }
+        lassign $item depth marker text
+        set depth [expr {min($depth, $prev + 1)}]
+        set prev $depth
+        if {$tags ne ""} { $w insert $idx "\n" $tags }
+        if {"td-list$depth" ni [$w tag names]} {
+            ::tkdown::list_indent $w td-list$depth $depth
+        }
+        set tags [concat $baseTags [list td-list td-list$depth]]
         $w insert $idx "$marker\t" $tags
         ::tkdown::runs $w $idx $text $tags
-        set first 0
     }
+}
+
+# The default code emitter: the text verbatim under codeTags, its line ended.
+proc ::tkdown::emit_code {w idx text codeTags} {
+    $w insert $idx "$text\n" $codeTags
+}
+
+# The default quote emitter. A quote following text with no blank line
+# between gets one. Each physical line opens with a bar under td-quotebar,
+# then its inline runs; the block lies under baseTags, -quotetags and
+# td-quote. A ">" left inside a quote's text is literal.
+proc ::tkdown::emit_quote {w idx text baseTags} {
+    variable widgets
+    set at [::tkdown::insert_at $w $idx]
+    if {[$w compare $at != "$at linestart"]} {
+        $w insert $idx "\n" $baseTags
+        set at [::tkdown::insert_at $w $idx]
+    }
+    if {[$w compare $at > 1.0] && [$w compare "$at -1c linestart" != "$at -1c"]} {
+        $w insert $idx "\n" $baseTags
+    }
+    set tags [concat $baseTags [dict get $widgets $w quotetags] [list td-quote]]
+    foreach line [split $text "\n"] {
+        $w insert $idx "▏ " [concat $tags [list td-quotebar]]
+        ::tkdown::runs $w $idx $line $tags
+        $w insert $idx "\n" $tags
+    }
+}
+
+# The default image emitter: -image_cmd turns the path into a Tk image,
+# embedded on a line of its own under baseTags; with no command, or none
+# returned, the alt text stands in, inline spans parsed.
+proc ::tkdown::emit_image {w idx alt path baseTags} {
+    variable widgets
+    set cmd [dict get $widgets $w image_cmd]
+    set img [expr {$cmd eq "" ? "" : [{*}$cmd $path]}]
+    if {$img ne ""} {
+        set at [::tkdown::insert_at $w $idx]
+        $w image create $idx -image $img -align baseline -padx 0 -pady 2
+        foreach tag $baseTags { $w tag add $tag $at }
+    } else {
+        ::tkdown::runs $w $idx $alt $baseTags
+    }
+    $w insert $idx "\n" $baseTags
+}
+
+# The default rule emitter: one line holding a space under td-rule, the
+# two-pixel face, so the host's td-rule -background draws a thin bar across
+# the pane.
+proc ::tkdown::emit_rule {w idx baseTags} {
+    $w insert $idx " \n" [concat $baseTags [list td-rule]]
 }
 
 # ---- the grid ------------------------------------------------------------
@@ -1020,11 +1593,11 @@ proc ::tkdown::emit_list_items {w idx items baseTags} {
 # base being the baseTags the table was painted under and lit whether it
 # is the spotlit table.
 
-# Paint a parsed GFM table {align rows} at idx: the window character under
-# td-tblwin (its margins, raised over the base tags' own) and baseTags (so a
-# host's fold or elide tag reaches the table too), the left-gravity mark
-# tbl#m<N> on it, then a blank line under baseTags. A table met mid-line
-# starts a line of its own.
+# The default table emitter: paint a parsed GFM table {align rows} at idx,
+# the window character under td-tblwin (its margins, raised over the base
+# tags' own) and baseTags (so a host's fold or elide tag reaches the table
+# too), the left-gravity mark tbl#m<N> on it, then its newline under
+# baseTags. A table met mid-line starts a line of its own.
 proc ::tkdown::emit_table {w idx payload baseTags} {
     variable widgets
     set id [dict get $widgets $w nextid]
@@ -1042,7 +1615,7 @@ proc ::tkdown::emit_table {w idx payload baseTags} {
     $w tag raise td-tblwin
     $w mark set tbl#m$id $at
     $w mark gravity tbl#m$id left
-    $w insert $idx "\n\n" $baseTags
+    $w insert $idx "\n" $baseTags
     set flat [lmap row [dict get $payload rows] {
         lmap cell $row {
             set s ""

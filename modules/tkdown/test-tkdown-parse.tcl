@@ -58,6 +58,60 @@ check bolditalic_embedded \
     {{plain {a }} {bolditalic b} {plain { c}}} \
     [pi {a ***b*** c}]
 
+# ---- parse_inline: links, bare URLs and inline images. A link run is
+# {link text url}; everything else stays {style chunk}.
+check inline_link \
+    {{plain {see }} {link docs https://x.org/d} {plain { now}}} \
+    [pi {see [docs](https://x.org/d) now}]
+check inline_link_title \
+    {{link docs https://x.org}} \
+    [pi {[docs](https://x.org "Docs")}]
+check inline_link_parens \
+    {{link Tcl https://en.wikipedia.org/wiki/Tcl_(language)}} \
+    [pi {[Tcl](https://en.wikipedia.org/wiki/Tcl_(language))}]
+check inline_link_emphasis_raw \
+    {{link {**big** news} u.html}} \
+    [pi {[**big** news](u.html)}]
+check inline_link_in_bold \
+    {{bold {see }} {link docs u.html}} \
+    [pi {**see [docs](u.html)**}]
+check inline_link_in_code \
+    {{plain {run }} {code {[a](b) https://x.org}}} \
+    [pi {run `[a](b) https://x.org`}]
+check inline_not_link \
+    {{plain {[a] (b) and [c](d e) and [f]}}} \
+    [pi {[a] (b) and [c](d e) and [f]}]
+check inline_bare_url \
+    {{plain {go to }} {link https://x.org/a https://x.org/a} {plain .}} \
+    [pi {go to https://x.org/a.}]
+check inline_bare_url_paren \
+    [list {plain {(see }} {link http://x.org/a http://x.org/a} {plain {), ok}}] \
+    [pi {(see http://x.org/a), ok}]
+check inline_bare_url_balanced \
+    {{link https://x.org/T_(l) https://x.org/T_(l)} {plain !}} \
+    [pi {https://x.org/T_(l)!}]
+check inline_bare_url_bold \
+    {{bold {link }} {link https://x.org https://x.org}} \
+    [pi {**link https://x.org**}]
+check inline_autolink \
+    {{plain {at }} {link https://x.org https://x.org}} \
+    [pi {at <https://x.org>}]
+check inline_url_midword \
+    {{plain xhttps://x.org}} \
+    [pi {xhttps://x.org}]
+check inline_url_bare_scheme \
+    [list {plain https://.}] \
+    [pi {https://.}]
+check inline_image \
+    {{plain {a cat sat}}} \
+    [pi {a ![cat](cat.png) sat}]
+check inline_image_alt_literal \
+    {{plain {see 2*3*4 here}}} \
+    [pi {see ![2*3*4](m.png) here}]
+check inline_escape_in_link \
+    {{link a*b u}} \
+    [pi {[a\*b](u)}]
+
 # ---- segment_blockquotes: split a body into ordered {kind text} segments,
 # de-quoting one leading "> "/">" per blockquote line, strict blank split.
 check seg_plain      {{normal hello}} \
@@ -73,6 +127,94 @@ no space}}} \
     [::tkdown::segment_blockquotes "> has space\n>no space"]
 check seg_blank_split {{quote first} {normal {}} {quote second}} \
     [::tkdown::segment_blockquotes "> first\n\n> second"]
+
+
+# ---- segment_headings: split a body into {heading {level title}} and
+# {normal text} segments, ATX and setext, never inside a fence.
+check head_atx_levels \
+    [list [list heading {1 One}] [list heading {3 Three}] [list heading {6 Six}]] \
+    [::tkdown::segment_headings "# One\n### Three\n###### Six"]
+check head_atx_closing \
+    [list [list heading {2 Title}] [list heading [list 1 C#]] [list heading {2 {}}]] \
+    [::tkdown::segment_headings "## Title ##\n# C#\n## ###"]
+check head_atx_not \
+    [list [list normal "#5 bolt\n####### seven\n#tag"]] \
+    [::tkdown::segment_headings "#5 bolt\n####### seven\n#tag"]
+check head_atx_inline_kept \
+    [list [list heading {2 {The **bold** `x`}}]] \
+    [::tkdown::segment_headings "## The **bold** `x`"]
+check head_around \
+    [list [list normal "intro\n"] [list heading {1 Head}] [list normal "\nbody"]] \
+    [::tkdown::segment_headings "intro\n\n# Head\n\nbody"]
+check head_setext_h1 \
+    [list [list heading {1 Title}] [list normal body]] \
+    [::tkdown::segment_headings "Title\n=====\nbody"]
+check head_setext_h2 \
+    [list [list normal "first line"] [list heading {2 Second}] [list normal body]] \
+    [::tkdown::segment_headings "first line\nSecond\n---\nbody"]
+check head_setext_after_blank \
+    [list [list normal "text\n\n---\nmore"]] \
+    [::tkdown::segment_headings "text\n\n---\nmore"]
+check head_setext_short \
+    [list [list normal "Title\n--"]] \
+    [::tkdown::segment_headings "Title\n--"]
+check head_table_delim \
+    [list [list normal "| a | b |\n|---|---|\n| 1 | 2 |"]] \
+    [::tkdown::segment_headings "| a | b |\n|---|---|\n| 1 | 2 |"]
+check head_table_unbounded \
+    [list [list normal "a | b\n---"]] \
+    [::tkdown::segment_headings "a | b\n---"]
+check head_setext_not_under_item \
+    [list [list normal "- item\n---"]] \
+    [::tkdown::segment_headings "- item\n---"]
+check head_quote_is_text \
+    [list [list normal "> # quoted\n> line\n---"]] \
+    [::tkdown::segment_headings "> # quoted\n> line\n---"]
+check head_fence_hash \
+    [list [list normal "```\n# comment\nfoo\n---\n```"] [list heading {1 After}]] \
+    [::tkdown::segment_headings "```\n# comment\nfoo\n---\n```\n# After"]
+check head_fence_survives \
+    [list [list prose before] [list code "# comment"] [list prose after]] \
+    [::tkdown::segment_code_fences [lindex [::tkdown::segment_headings \
+        "before\n```tcl\n# comment\n```\nafter"] 0 1]]
+
+# ---- segment_rules: {rule {}} for a thematic break, {normal text} else.
+check rule_kinds \
+    [list [list rule {}] [list rule {}] [list rule {}] [list rule {}]] \
+    [::tkdown::segment_rules "---\n***\n___\n- - -"]
+check rule_after_blank \
+    [list [list normal "text\n"] [list rule {}] [list normal more]] \
+    [::tkdown::segment_rules "text\n\n---\nmore"]
+check rule_setext_kept \
+    [list [list normal "Heading\n---\nbody"]] \
+    [::tkdown::segment_rules "Heading\n---\nbody"]
+check rule_after_heading_text \
+    [list [list rule {}] [list normal body]] \
+    [::tkdown::segment_rules [lindex [::tkdown::segment_headings \
+        "# H\n---\nbody"] 1 1]]
+check rule_table_delim \
+    [list [list normal "| a | b |\n|---|---|"]] \
+    [::tkdown::segment_rules "| a | b |\n|---|---|"]
+check rule_not \
+    [list [list normal "--\n-- -x\n*** bold\n----a"]] \
+    [::tkdown::segment_rules "--\n-- -x\n*** bold\n----a"]
+check rule_fenced \
+    [list [list normal "```\n---\n```"]] \
+    [::tkdown::segment_rules "```\n---\n```"]
+
+# ---- segment_images: {image {alt path}} for a line that is only an image.
+check image_line \
+    [list [list normal intro] [list image {{a cat} img/cat.png}] [list normal outro]] \
+    [::tkdown::segment_images "intro\n  !\[a cat\](img/cat.png)  \noutro"]
+check image_title \
+    [list [list image {logo logo.svg}]] \
+    [::tkdown::segment_images {![logo](logo.svg "The logo")}]
+check image_inline_left \
+    [list [list normal {see ![x](x.png) here}]] \
+    [::tkdown::segment_images {see ![x](x.png) here}]
+check image_fenced \
+    [list [list normal "```\n!\[x\](x.png)\n```"]] \
+    [::tkdown::segment_images "```\n!\[x\](x.png)\n```"]
 
 # ---- segment_tables: split a prose run into {normal text} / {table payload}
 # segments, payload = {align <per-col> rows <header-then-body>}. Expected
@@ -113,39 +255,63 @@ check tbl_interleave \
     [::tkdown::segment_tables \
         "intro\n\n| H1 | H2 |\n| - | - |\n| a | b |\n\noutro"]
 
-# ---- segment_lists: split a normal run into {normal text} / {list items}
-# segments; each item is {num text}, num "" for a bullet or the digits for an
-# ordered item, flat only (an indented or nested marker stays literal).
+# ---- segment_lists: {normal text} / {list items}, each item
+# {depth marker text}, marker "•" for a bullet and "N." for an ordered item.
 check list_bullet \
-    [list [list list {{{} apples} {{} pears}}]] \
+    [list [list list {{0 • apples} {0 • pears}}]] \
     [::tkdown::segment_lists "- apples\n- pears"]
-check list_star \
-    [list [list list {{{} one} {{} two}}]] \
-    [::tkdown::segment_lists "* one\n* two"]
+check list_star_plus \
+    [list [list list {{0 • one} {0 • two}}]] \
+    [::tkdown::segment_lists "* one\n+ two"]
 check list_numbered \
-    [list [list list {{1 first} {2 second} {3 third}}]] \
+    [list [list list {{0 1. first} {0 2. second} {0 3. third}}]] \
     [::tkdown::segment_lists "1. first\n2. second\n3. third"]
 check list_numbering_kept \
-    [list [list list {{2 two} {3 three}}]] \
-    [::tkdown::segment_lists "2. two\n3. three"]
+    [list [list list {{0 3. three} {0 7. seven}}]] \
+    [::tkdown::segment_lists "3. three\n7. seven"]
 check list_mixed_markers \
-    [list [list list {{{} bul} {1 ord}}]] \
+    [list [list list {{0 • bul} {0 1. ord}}]] \
     [::tkdown::segment_lists "- bul\n1. ord"]
 check list_prose_around \
-    [list [list normal intro] [list list {{{} a} {{} b}}] [list normal outro]] \
-    [::tkdown::segment_lists "intro\n- a\n- b\noutro"]
+    [list [list normal intro] [list list {{0 • a} {0 • b}}] [list normal "\noutro"]] \
+    [::tkdown::segment_lists "intro\n- a\n- b\n\noutro"]
 check list_midline_literal \
     [list [list normal "use the - dash key\nrun 3 * 4 now"]] \
     [::tkdown::segment_lists "use the - dash key\nrun 3 * 4 now"]
-check list_indented_literal \
-    [list [list normal "  - nested\n    * deeper"]] \
-    [::tkdown::segment_lists "  - nested\n    * deeper"]
 check list_version_literal \
-    [list [list normal "tcl 9.0 and 1.2.3 stay text"]] \
-    [::tkdown::segment_lists "tcl 9.0 and 1.2.3 stay text"]
+    [list [list normal "tcl 9.0 and 1.2.3 stay text\n1.2.3 too"]] \
+    [::tkdown::segment_lists "tcl 9.0 and 1.2.3 stay text\n1.2.3 too"]
+check list_rule_literal \
+    [list [list normal "- - -"]] \
+    [::tkdown::segment_lists "- - -"]
+check list_nested \
+    [list [list list {{0 • top} {1 • mid} {2 • deep} {1 • tab} {0 2. back}}]] \
+    [::tkdown::segment_lists "- top\n  - mid\n    * deep\n\t- tab\n2. back"]
+check list_indented_start \
+    [list [list list {{1 • nested}}]] \
+    [::tkdown::segment_lists "  - nested"]
+check list_lazy \
+    [list [list list {{0 • {one runs on}} {0 • two}}]] \
+    [::tkdown::segment_lists "- one\nruns on\n- two"]
+check list_indented_continuation \
+    [list [list list {{0 1. {first and more}} {1 • {sub tail}}}]] \
+    [::tkdown::segment_lists "1. first\n   and more\n   - sub\n     tail"]
+check list_lazy_after_last \
+    [list [list list {{0 • a} {0 • {b outro}}}]] \
+    [::tkdown::segment_lists "- a\n- b\noutro"]
+check list_blank_continues \
+    [list [list list {{0 • a} {1 • b} {0 • c}}]] \
+    [::tkdown::segment_lists "- a\n\n  - b\n\n\n- c"]
+check list_blank_ends \
+    [list [list list {{0 • a}}] [list normal "\n  indented para"]] \
+    [::tkdown::segment_lists "- a\n\n  indented para"]
+check list_fence_ends \
+    [list [list list {{0 • a}}] [list normal "```\n- not an item\n```"]] \
+    [::tkdown::segment_lists "- a\n```\n- not an item\n```"]
 check list_none \
     [list [list normal "just a paragraph\nof two lines"]] \
     [::tkdown::segment_lists "just a paragraph\nof two lines"]
+
 
 # ---- table_to_markdown: a payload back to GFM text that segment_tables reads
 # back to the same payload.
