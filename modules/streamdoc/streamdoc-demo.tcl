@@ -9,14 +9,16 @@
 # Try: turn on "Stream steps" and watch regions pour in while you read -
 # scroll anywhere and your line holds. Click a step's header to fold it, its
 # summary line to reveal the hidden checks. "Follow tail" latches the view to
-# the bottom (the tail -f contract) until you scroll away.
+# the bottom (the tail -f contract) until you scroll away. Ctrl-F opens the
+# find bar: Return and Shift-Return step through the hits, opening folded
+# steps and hidden checks on the way; Escape closes it.
 
 package require Tcl 9
 package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
 foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
-package require streamdoc
+package require -exact streamdoc 1.2a1
 
 font create DocBody {*}[font actual TkTextFont]
 font create DocHead {*}[font actual TkTextFont] -weight bold
@@ -40,6 +42,7 @@ oo::class create DemoFeed {
         $Text tag configure summary -foreground #8a8a8a
         $Text tag configure detail -foreground #4a6a8a \
             -lmargin1 18 -lmargin2 18
+        $Text tag configure find -background #fff8c5
         $Text tag bind hdr <Button-1> [list [self] hdr_click %x %y]
         $Text tag bind summary <Button-1> [list [self] summary_click %x %y]
     }
@@ -124,5 +127,8 @@ pack .f.bar.at .f.bar.follow .f.bar.stream .f.bar.exp .f.bar.fold \
     -side right -padx 4
 bind .f.doc <<AtBottom>>   {.f.bar.at configure -text "at tail"}
 bind .f.doc <<LeftBottom>> {.f.bar.at configure -text ""}
+# The module binds Ctrl-F on its own frame and text; the window-wide key is
+# the host's to bind.
+bind . <Control-f> [list $d find_show]
 update
 wm title . "StreamDoc demo"

@@ -43,6 +43,7 @@ The first character of a header line and of a summary line is a state glyph from
 | `append_open` → mark | open the door: into the open region (popping its summary), else chrome at the tail |
 | `emit mark text tags` / `emit_window mark args` | insert text or an embedded window at the door |
 | `append_close mark` | close the door; the open region's summary re-appends |
+| `door` → mark | the open door's mark, for code that did not open it; an error when no door is open |
 | `savepoint` → mark | a left-gravity mark at the append point, for a later rewind |
 | `rewind mark` | delete from a saved mark to the open region's end; the caller re-emits |
 | `discard mark` | release a savepoint mark |
@@ -50,7 +51,7 @@ The first character of a header line and of a summary line is a state glyph from
 | `detail_show n` / `detail_hide n` / `detail_toggle n` | reveal / re-hide a region's detail layer |
 | `fold_all` / `expand_all` | the table-of-contents reading, and back |
 | `summary_sync` | re-derive the open region's summary line from its payload |
-| `reveal idx ?align?` | unfold and un-hide whatever covers an index, then scroll it into view: `see` (default) scrolls the least, `top` puts its line on the top edge, or as near as the last screenful allows |
+| `reveal idx ?align?` | run `on_reveal`, unfold and un-hide whatever covers an index, then scroll it into view: `see` (default) scrolls the least, `top` puts its line on the top edge, or as near as the last screenful allows |
 | `region_at idx` | the region containing an index, `-1` for chrome |
 | `detail_tag n` | the tag the host lays on region `n`'s detail lines as it emits |
 | `payload n` / `payload_set n payload` | the region's opaque host dict |
@@ -77,11 +78,31 @@ The widget's defining behaviour: content arriving while the user reads never mov
 - `follow` jumps to the tail and re-latches.
 - `<<AtBottom>>` and `<<LeftBottom>>` fire on the host frame when the view reaches or leaves the last line, so a host can show a "jump to latest" affordance the way chat clients do.
 
+## FIND
+
+| Primitive | Role |
+|---|---|
+| `find_show` / `find_hide` | place the Ctrl-F bar and focus its entry / unplace it and clear the hits, the insert mark left at the last hit |
+| `find_next` / `find_prev` | step to the next or previous hit with wraparound, through `reveal`; the first step after the term or the case box changed recollects |
+| `collect term nocase` | tag every literal hit `find` and return the hits in document order, text hits merged with `find_extra`'s; existing `find` tags stay |
+| `collect_matches pattern` | remove the `find` tag, then `collect` under the case box: sets `FindMatches`, resets `FindCur`, updates the readout |
+| `find_clear` | remove the `find` tag, empty the hits and the readout |
+| `find_excerpt idx` | a hit's excerpt: its `find_extra` excerpt, else its line's text |
+| `build_find` | build the bar: entry, `N of M` readout, `Aa` case box, Prev, Next, ✕ |
+
+`setup` builds the bar and binds it: `<Control-f>` on the host frame and the text shows it, `<Escape>` on the text or the entry hides it, `<Return>` and `<Shift-Return>` in the entry step forward and back. The text search runs with `-elide`, so a hit inside a folded region or a hidden detail block is found and the step opens it. Calling `collect` once per term keeps every term lit, and a host that fills `FindMatches` itself steps through that set while the entry holds the term last collected. The bar is plain ttk; the host configures the `find` tag for the highlight. A subclass reads `FindMatches` (indices or marks), `FindCur` (0-based, `-1` before the first step), `FindVar` (the entry), `FindPos` (the readout) and `FindNocase` (`1` by default; the `Aa` box sets it to `0`).
+
 ## HOOKS
 
 - `summary_text payload` - the summary phrase for a region's payload; the empty string takes no summary line. Default: always empty.
 - `region_tags payload` - the tags laid on the summary line the base class writes, so the host can style and bind it. Default: `summary`.
 - `on_region_rendered n` - runs when a region closes; wire bindings or indices here. Default: nothing.
+- `on_reveal idx` - the first thing `reveal` does, before any unfold, idle drain or scroll, so a window the scroll realises is born in the state the host set. Default: nothing.
+- `place_find frame` - puts the find bar on screen; `find_hide` unplaces it through whichever geometry manager this chose. Default: the grid row below the text and scrollbar.
+- `find_chrome_tags` - tags whose text the search skips; a hit starting on one is no hit. Default: `summary`.
+- `find_bound` - the index the text search stops at. Default: `end`.
+- `find_extra term nocase` - `{index excerpt}` pairs for hits the text search cannot see, such as the inside of an embedded window; an index may be a mark. Default: none.
+- `on_find_collected`, `on_find_stepped i`, `find_cleared` - run after a fresh match set, after landing on hit `i`, and after the hits are cleared. Default: nothing.
 
 Everything else a host adds - header styling, click-to-fold, detail styling - is ordinary tag configuration and tag bindings on tags the host emits itself, resolved back to a region through `region_at`.
 
@@ -109,4 +130,4 @@ Tcl 9 and Tk. The sibling of [streamtree](streamtree.md): a document of regions 
 
 ## KEYWORDS
 
-text widget, streaming, fold, elide, transcript, log viewer, tail -f
+text widget, streaming, fold, elide, transcript, log viewer, tail -f, find

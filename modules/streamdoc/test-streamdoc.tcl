@@ -1,16 +1,17 @@
 #!/usr/bin/env wish9.0
 # A minimal host over the StreamDoc base class: chrome and regions through the
 # content door, the two elide layers, summary sync while a region streams,
-# rewind, reveal onto an elided target, and the anchor contract (a parked
-# reader unmoved by appends below; the autofollow latch at the tail). Audit
-# gate on throughout; the last check asserts it never tripped.
+# rewind, reveal onto an elided target, the anchor contract (a parked
+# reader unmoved by appends below; the autofollow latch at the tail), the
+# door query, the on_reveal hook and the find bar. Audit gate on throughout;
+# the last check asserts it never tripped.
 
 package require Tcl 9
 package require Tk
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require streamdoc
+package require -exact streamdoc 1.2a1
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
@@ -216,6 +217,186 @@ check "reveal top in the last screenful stops at the end" 1 \
 check "reveal top in the last screenful shows the target" 1 \
     [expr {[$T bbox $last] ne ""}]
 check "reveal rejects an unknown align" 1 [catch {$d reveal $idx middle}]
+
+# ---- door -------------------------------------------------------------------
+check "door errors with no door open" 1 [catch {$d door} msg]
+check "door's error says so" "no door is open" $msg
+$d batch {
+    set m [$d append_open]
+    set inside [$d door]
+    $d append_close $m
+}
+check "door returns the open door's mark" $m $inside
+check "door errors once the door closes" 1 [catch {$d door}]
+
+# ---- find: a second document with every find hook overridden ----------------
+# on_reveal records the target region's fold state and the view at hook time.
+oo::class create Finder {
+    superclass Feed
+    variable Text
+    method on_reveal {idx} {
+        set n [my region_at $idx]
+        lappend ::revealed [dict create folded [expr {$n >= 0 ? [my folded $n] : -1}] \
+            yview [$Text yview]]
+    }
+    method find_extra {term nocase} { return $::extra }
+    method find_bound {} { return $::bound }
+    method on_find_stepped {i} { lappend ::stepped $i }
+    method find_cleared {} { incr ::cleared }
+}
+set ::extra {}
+set ::bound end
+set ::stepped {}
+set ::cleared 0
+
+toplevel .t2
+pack [ttk::frame .t2.f] -fill both -expand 1
+set g [Finder new]
+$g setup .t2.f
+set T2 .t2.f.text
+$T2 configure -width 40 -height 6
+proc fv {name} { return [set [info object namespace $::g]::$name] }
+proc fset {name val} { set [info object namespace $::g]::$name $val }
+proc at2 {pat} { return [$::T2 search -elide $pat 1.0] }
+proc apple {pat} { return [$::T2 index "[at2 $pat] +[string first apple $pat]c"] }
+proc lit {idx} { return [expr {"find" in [$::T2 tag names $idx]}] }
+
+$g batch {
+    set m [$g append_open]
+    $g emit $m "intro: Apple pie\n" {}
+    $g append_close $m
+    set r [$g region_open [dict create notes 1]]
+    set m [$g append_open]
+    $g emit $m "▾ Fruit\napple one\na note in the body\n" {}
+    $g emit $m "hidden apple two\n" [list [$g detail_tag $r]]
+    $g append_close $m
+    $g region_close
+    set r [$g region_open [dict create]]
+    set m [$g append_open]
+    $g emit $m "▾ Veg\n" {}
+    for {set i 0} {$i < 30} {incr i} { $g emit $m "filler $i\n" {} }
+    $g emit $m "carrot apple\n" {}
+    $g append_close $m
+    $g region_close
+    set m [$g append_open]
+    $g emit $m "END apple\n" {}
+    $g append_close $m
+}
+$g fold 0
+update
+
+check "FindNocase defaults to 1" 1 [fv FindNocase]
+set hits [$g collect apple 1]
+check "collect finds every hit, case folded" 5 [llength $hits]
+check "collect returns hits in document order" \
+    [list [at2 Apple] [at2 "apple one"] [at2 "apple two"] [apple "carrot apple"] [apple "END apple"]] \
+    [lmap h $hits { $T2 index $h }]
+check "collect tags a hit in a folded region" 1 [lit [at2 "apple one"]]
+check "collect tags a hit in hidden detail" 1 [lit "[at2 {hidden apple}] +7c"]
+check "collect leaves the folded region folded" 1 [$g folded 0]
+check "collect is case-sensitive when asked" 4 [llength [$g collect apple 0]]
+
+set notes [$g collect note 1]
+check "collect skips a hit on a chrome tag (the summary)" \
+    [list [$T2 index "[at2 {a note}] +2c"]] $notes
+check "the skipped summary hit is not lit" 0 [lit "[at2 {· 1 note}] +4c"]
+check "collect keeps an earlier collect's find tags" 1 [lit [apple "carrot apple"]]
+
+$T2 mark set x#0 1.0
+$T2 mark set x#1 [$T2 index "[at2 {carrot apple}] linestart"]
+set ::extra [list [list x#1 "excerpt one"] [list x#0 "excerpt zero"]]
+set hits [$g collect apple 1]
+check "find_extra hits merge into document order" 1 \
+    [expr {[lindex $hits 0] eq "x#0" && [lsearch $hits x#1] == 4}]
+check "find_extra hits count in the result" 7 [llength $hits]
+check "find_excerpt returns the find_extra excerpt" "excerpt one" [$g find_excerpt x#1]
+check "find_excerpt defaults to the hit's line" "carrot apple" [$g find_excerpt [apple "carrot apple"]]
+set ::extra {}
+
+set ::bound [$T2 index "[at2 {END apple}] linestart"]
+check "find_bound stops the text search" 4 [llength [$g collect apple 1]]
+set ::bound end
+
+$g collect_matches carrot
+check "collect_matches removes the earlier find tags" 0 [lit [at2 "apple one"]]
+check "collect_matches sets FindMatches" [list [at2 carrot]] [fv FindMatches]
+check "collect_matches leaves no hit shown" -1 [fv FindCur]
+check "collect_matches updates the readout" "1 of 1" [fv FindPos]
+
+# Stepping: the term in the entry is new, so find_next recollects.
+$g fold 0
+$g fold 1
+$T2 yview moveto 0
+update
+fset FindVar apple
+set ::revealed {}
+$g find_next
+check "find_next recollects a changed term" 5 [llength [fv FindMatches]]
+check "find_next shows the first hit" "1 of 5" [fv FindPos]
+check "on_find_stepped gets the hit" 0 [lindex $::stepped end]
+$g find_next
+update
+check "find_next unfolds the hit's region" 0 [$g folded 0]
+check "on_reveal saw the region still folded" 1 [dict get [lindex $::revealed end] folded]
+$g find_next
+update
+set before [$T2 yview]
+$g find_next
+update
+check "on_reveal ran before the scroll" $before [dict get [lindex $::revealed end] yview]
+check "on_reveal saw the far region still folded" 1 [dict get [lindex $::revealed end] folded]
+check "the step scrolled" 1 [expr {[$T2 yview] ne $before}]
+check "the step brought the hit into view" 1 [expr {[$T2 bbox [apple "carrot apple"]] ne ""}]
+$g find_next
+check "find_next reached the last hit" "5 of 5" [fv FindPos]
+$g find_next
+check "find_next wraps to the first hit" "1 of 5" [fv FindPos]
+$g find_prev
+check "find_prev wraps to the last hit" "5 of 5" [fv FindPos]
+$g find_prev
+check "find_prev steps back" "4 of 5" [fv FindPos]
+check "a step leaves the insert mark on the hit" [apple "carrot apple"] [$T2 index insert]
+
+fset FindNocase 0
+$g find_typing
+check "flipping the case box blanks the readout" "" [fv FindPos]
+$g find_next
+check "a case flip recollects case-sensitively" "1 of 4" [fv FindPos]
+fset FindNocase 1
+
+fset FindVar xyzzy
+$g find_next
+check "a term with no hits reads 0 of 0" "0 of 0" [fv FindPos]
+
+# ---- the bar ----------------------------------------------------------------
+check "the bar is unplaced until shown" "" [winfo manager .f.find]
+$d find_show
+update
+check "find_show grids the bar by default" grid [winfo manager .f.find]
+check "the default bar sits in the row below the text" 1 [dict get [grid info .f.find] -row]
+$d find_hide
+check "find_hide unplaces the bar" "" [winfo manager .f.find]
+check "Ctrl-F on the text shows the bar" 1 [string match *find_show* [bind $T <Control-f>]]
+check "Ctrl-F on the host frame shows the bar" 1 [string match *find_show* [bind .f <Control-f>]]
+check "Return on the entry steps forward" 1 [string match *find_next* [bind .f.find.e <Return>]]
+check "Shift-Return on the entry steps back" 1 [string match *find_prev* [bind .f.find.e <Shift-Return>]]
+check "Escape on the text hides the bar" 1 [string match *find_hide* [bind $T <Escape>]]
+
+oo::define Finder method place_find {frame} { place $frame -x 0 -y 0 -relwidth 1 }
+fset FindVar apple
+$g find_show
+update
+check "a place_find override is honoured" place [winfo manager .t2.f.find]
+$g find_next
+set last [$T2 index insert]
+set c $::cleared
+$g find_hide
+check "find_hide unplaces an overridden bar" "" [winfo manager .t2.f.find]
+check "find_hide clears the hits" {} [fv FindMatches]
+check "find_hide clears the readout" "" [fv FindPos]
+check "find_hide removes the find tag" {} [$T2 tag ranges find]
+check "find_clear calls find_cleared" [expr {$c + 1}] $::cleared
+check "find_hide leaves the insert mark at the last hit" $last [$T2 index insert]
 
 check "audit gate never tripped" 0 [tripped]
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
