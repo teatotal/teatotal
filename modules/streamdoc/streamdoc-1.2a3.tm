@@ -267,10 +267,10 @@ oo::class create ::streamdoc::StreamDoc {
         return [expr {[my opt autofollow] && [info exists Latched] && $Latched}]
     }
 
-    # The bindtag streamdoc binds a host widget through, streamdoc$w, put
-    # once into w's bindtags right after w's own tag: the host's bindings on
-    # the widget run first and a `break` there stops streamdoc's, and the
-    # class bindings run after unless streamdoc's script breaks.
+    # streamdoc's bindings on a host widget w go on the tag streamdoc$w,
+    # inserted once into w's bindtags just after w's own: the host's bindings
+    # on w run first and a `break` there stops streamdoc's; the class's run
+    # after, unless streamdoc's script breaks.
     method bindtag {w} {
         set tag streamdoc$w
         set tags [bindtags $w]
