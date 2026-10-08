@@ -1,6 +1,6 @@
 package require Tcl 9
 package require Tk
-package provide streamdoc 1.2a2
+package provide streamdoc 1.2a3
 
 namespace eval ::streamdoc {}
 
@@ -255,15 +255,30 @@ oo::class create ::streamdoc::StreamDoc {
         if {[info exists Latched]} return
         set Latched 0
         set FollowAfter ""
-        foreach ev {<MouseWheel> <Button-4> <Button-5> <TouchpadScroll>
-                <Prior> <Next> <Up> <Down> <Home> <End>} {
-            catch {bind $Text $ev +[list [self] latch_release]}
+        set tag [my bindtag $Text]
+        foreach ev {<MouseWheel> <Shift-MouseWheel> <Button-4> <Button-5>
+                <TouchpadScroll> <Prior> <Next> <Up> <Down> <Home> <End>} {
+            catch {bind $tag $ev [list [self] latch_release]}
         }
-        bind $Text <Configure> +[list [self] refollow_later]
+        bind $tag <Configure> [list [self] refollow_later]
     }
     method latch_release {} { set Latched 0 }
     method latched {} {
         return [expr {[my opt autofollow] && [info exists Latched] && $Latched}]
+    }
+
+    # The bindtag streamdoc binds a host widget through, streamdoc$w, put
+    # once into w's bindtags right after w's own tag: the host's bindings on
+    # the widget run first and a `break` there stops streamdoc's, and the
+    # class bindings run after unless streamdoc's script breaks.
+    method bindtag {w} {
+        set tag streamdoc$w
+        set tags [bindtags $w]
+        if {$tag ni $tags} {
+            set i [lsearch -exact $tags $w]
+            bindtags $w [linsert $tags [expr {$i + 1}] $tag]
+        }
+        return $tag
     }
 
     # A scroll on the reader's behalf: forwards to the text's yview and lets
@@ -812,9 +827,9 @@ oo::class create ::streamdoc::StreamDoc {
         pack $Find.e -side left -fill x -expand 1
         foreach w {pos case prev next close} { pack $Find.$w -side left -padx 2 }
         # break: the Text class binds Control-f to a cursor move.
-        bind $Top <Control-f> [list [self] find_show]
-        bind $Text <Control-f> "[list [self] find_show]; break"
-        bind $Text <Escape> [list [self] find_hide]
+        bind [my bindtag $Top] <Control-f> [list [self] find_show]
+        bind [my bindtag $Text] <Control-f> "[list [self] find_show]; break"
+        bind [my bindtag $Text] <Escape> [list [self] find_hide]
         bind $Find.e <Escape> [list [self] find_hide]
         bind $Find.e <Return> [list [self] find_next]
         bind $Find.e <Shift-Return> [list [self] find_prev]

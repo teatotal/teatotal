@@ -80,6 +80,7 @@ The widget's defining behaviour: content arriving while the user reads never mov
 - With `-autofollow 1` and the reader at the tail, the view latches to the tail and follows streamed appends (the `tail -f` / chat contract). Only the reader lets go of the latch: wheel or touchpad scrolling and the `Prior`/`Next`/`Up`/`Down`/`Home`/`End` keys on the text, a scrollbar drag, `scroll_to` (so a host's programmatic scroll counts as the reader's), a fold or detail toggle, and a `reveal` or find step whose target is not on the last line. Growth at the tail the reader did not ask for leaves the latch held and re-follows on idle: an append, an embedded window realised or grown after its batch, a resize of the text. A batch that finds the view on the tail takes the latch.
 - `follow` jumps to the tail and re-latches.
 - `<<AtBottom>>` and `<<LeftBottom>>` fire on the host frame when the view reaches or leaves the last line, so a host can show a "jump to latest" affordance the way chat clients do.
+- streamdoc's bindings on the text and the host frame live on a bindtag of its own, `streamdoc` followed by the widget's path, placed right after the widget's own tag and before its class, so a host's bindings on the text run first and a host `break` there wins.
 
 ## FIND
 

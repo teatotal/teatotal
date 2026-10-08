@@ -18,7 +18,7 @@ proc bgerror {msg} {
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact streamdoc 1.2a2
+package require -exact streamdoc 1.2a3
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
@@ -483,11 +483,48 @@ check "find_show grids the bar by default" grid [winfo manager .f.find]
 check "the default bar sits in the row below the text" 1 [dict get [grid info .f.find] -row]
 $d find_hide
 check "find_hide unplaces the bar" "" [winfo manager .f.find]
-check "Ctrl-F on the text shows the bar" 1 [string match *find_show* [bind $T <Control-f>]]
-check "Ctrl-F on the host frame shows the bar" 1 [string match *find_show* [bind .f <Control-f>]]
 check "Return on the entry steps forward" 1 [string match *find_next* [bind .f.find.e <Return>]]
 check "Shift-Return on the entry steps back" 1 [string match *find_prev* [bind .f.find.e <Shift-Return>]]
-check "Escape on the text hides the bar" 1 [string match *find_hide* [bind $T <Escape>]]
+
+# ---- bindings live on streamdoc's own bindtag, after the widget's -------------
+proc press {w ev} { focus -force $w; update; event generate $w $ev; update }
+proc tagcount {w} { return [llength [lsearch -all -exact [bindtags $w] streamdoc$w]] }
+check "the text holds the streamdoc tag once after setup" 1 [tagcount $T]
+check "the tag sits between the widget's and the class's" \
+    [list $T streamdoc$T Text] [lrange [bindtags $T] 0 2]
+check "the host frame holds its streamdoc tag once" 1 [tagcount .f]
+check "nothing of streamdoc's is bound on the text's own tag" {} [bind $T]
+
+press $T <Control-f>
+check "Ctrl-F on the text shows the bar" grid [winfo manager .f.find]
+press $T <Escape>
+check "Escape on the text hides the bar" "" [winfo manager .f.find]
+press .f <Control-f>
+check "Ctrl-F on the host frame shows the bar" grid [winfo manager .f.find]
+$d find_hide
+$T mark set insert 1.0
+press $T <Control-f>
+check "Ctrl-F on the text breaks before the class's cursor move" 1.0 [$T index insert]
+$d find_hide
+
+set ::keys 0
+bind $T <KeyPress> {incr ::keys}
+$d follow
+update
+press $T <Prior>
+check "a host's generic <KeyPress> on the text still runs on Prior" 1 $::keys
+check "Prior still lets go of the latch" 0 [latched]
+check "the class's Prior still scrolls" 1 [expr {[lindex [$T yview] 1] < 1.0}]
+bind $T <KeyPress> {}
+
+bind $T <MouseWheel> break
+$d follow
+update
+event generate $T <MouseWheel> -delta -120
+check "a host break on the text's <MouseWheel> keeps the latch" 1 [latched]
+bind $T <MouseWheel> {}
+event generate $T <MouseWheel> -delta -120
+check "with the host's binding gone the wheel lets go again" 0 [latched]
 
 oo::define Finder method place_find {frame} { place $frame -x 0 -y 0 -relwidth 1 }
 fset FindVar apple
@@ -504,6 +541,10 @@ check "find_hide clears the readout" "" [fv FindPos]
 check "find_hide removes the find tag" {} [$T2 tag ranges find]
 check "find_clear calls find_cleared" [expr {$c + 1}] $::cleared
 check "find_hide leaves the insert mark at the last hit" $last [$T2 index insert]
+
+$g reset
+check "reset leaves the streamdoc tag on the text once" 1 [tagcount $T2]
+check "reset leaves the host frame's tag once" 1 [tagcount .t2.f]
 
 check "audit gate never tripped" 0 [tripped]
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
