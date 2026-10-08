@@ -229,7 +229,7 @@ $d batch {
 check "door returns the open door's mark" $m $inside
 check "door errors once the door closes" 1 [catch {$d door}]
 
-# ---- find: a second document with every find hook overridden ----------------
+# ---- find: a second document whose host overrides the find hooks ------------
 # on_reveal records the target region's fold state and the view at hook time.
 oo::class create Finder {
     superclass Feed

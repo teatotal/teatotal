@@ -61,7 +61,7 @@ namespace eval ::streamdoc {}
 # Find (Ctrl-F): a bar under the text whose entry collects every literal
 # hit, folded and hidden text included, tags it `find`, and steps through
 # the hits with wraparound, each one through `reveal`. The base class lays
-# the tag and owns no ink; the host configures `find` for the look.
+# the tag and sets no colours; the host configures `find` for the look.
 #
 # Hooks the host overrides, each with a working default:
 #   summary_text payload    the summary phrase; "" takes no summary line
@@ -189,7 +189,7 @@ oo::class create ::streamdoc::StreamDoc {
     # ---- body assembly -----------------------------------------------
 
     # The whole construction ritual in one call: seed the base class's state and
-    # build the document text and its scrollbar into `parent` (a frame the
+    # build the document text, its scrollbar and the find bar into `parent` (a frame the
     # host owns and packs). A subclass constructor calls `my configure ...`
     # first when it overrides the look, then `my setup $parent`.
     method setup {parent} {
@@ -706,7 +706,8 @@ oo::class create ::streamdoc::StreamDoc {
         bind $Find.e <KeyRelease> [list [self] find_typing]
     }
 
-    # The row under the text and scrollbar setup gridded at row 0.
+    # The default place: the grid row under the text and scrollbar, which
+    # setup grids at row 0.
     method place_find {frame} {
         grid $frame -row 1 -column 0 -columnspan 2 -sticky ew
     }
@@ -739,8 +740,8 @@ oo::class create ::streamdoc::StreamDoc {
     # Tag every hit of a literal term `find` and return the hits in document
     # order. Existing `find` tags stay, so a host collecting term by term
     # keeps them all lit. -elide finds folded and hidden text; reveal opens
-    # it on the jump. A hit starting on a chrome tag is skipped. find_extra
-    # hits are merged in by index and keep their excerpts.
+    # it on the jump. A hit starting under a find_chrome_tags tag is skipped.
+    # find_extra hits are merged in by index and keep their excerpts.
     method collect {term nocase} {
         if {$term eq ""} { return [list] }
         set opts [list -elide -count len]

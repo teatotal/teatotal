@@ -228,7 +228,7 @@ proc ref_floors {rows avail em} {
     }
     return $floors
 }
-# The in-budget proportional shrink: max-contents scaled to avail, clamped
+# The proportional shrink: max-contents scaled to avail, clamped
 # into [floor, max], the remainder given to columns with room, first first.
 proc ref_prop {rows avail em space} {
     set maxs [ref_maxs $rows $space]
@@ -249,7 +249,7 @@ proc ref_prop {rows avail em space} {
     }
     return $out
 }
-# Every way a result can break the contract, as a list of complaints.
+# Every way a result can break the contract, as a list of faults.
 proc colwidths_faults {rows avail em space widths} {
     set faults [list]
     set maxs [ref_maxs $rows $space]
