@@ -1169,9 +1169,9 @@ proc ::tkdown::options {w reg opts} {
 # A line an item continues on carries td-listc<d> as well, which sets both
 # margins at the item text. td-quote insets a quote block, bar included. A
 # grid sits at the margin itself, and its width is capped by both margins.
-# td-rule zeroes the line spacing and is raised over the base tags, so a
-# base tag's -spacing1/-spacing3 cannot widen the rule's line, which would
-# take td-rule's -background: the bar is the face's two pixels alone.
+# td-rule zeroes the line spacing and is raised over the base tags: spacing
+# from a base tag would widen the line, and the line takes td-rule's
+# -background, so the bar would be thicker than the face's two pixels.
 proc ::tkdown::margins {w} {
     ::tkdown::list_indent $w td-list 0
     foreach tag [$w tag names] {
@@ -1435,8 +1435,8 @@ proc ::tkdown::refit_run {w} {
 
 # Drop w's tables and links: destroy every grid, unset every tbl#m<N> mark,
 # delete every td-link<N> tag, empty both registries. A `delete 1.0 end`
-# alone leaves the link tags behind, and an unbuilt table's mark until the
-# next prune. Registration survives; call before a re-render. Table and
+# alone leaves the link tags behind, and an unbuilt table's mark until
+# refit or table_scan drops its record. Registration survives; call before a re-render. Table and
 # link numbers are not reset, so a number never names two things.
 proc ::tkdown::forget {w} {
     variable widgets
