@@ -28,7 +28,9 @@ The parse half is pure Tcl and needs no Tk, so it runs under a bare `tclsh`; the
 
 ## THE HOST OWNS THE CHROME
 
-Every `td-*` tag the module configures is either font-only or geometry-only, never coloured. The module owns the faces: `td-bold`, `td-italic`, `td-bolditalic`, `td-code`, `td-link` (the body face), the heading levels, and `td-rule` (a face two pixels tall), each carrying nothing but a `-font`. The geometry tags carry layout and no font: `td-list` and `td-list<depth>` the list hanging indents, `td-quote` a quote's inset, and `td-tblwin` the margins of the character holding a table's grid, all set from the margin the host names with `-margin`.
+Every `td-*` tag the module configures is either font-only or geometry-only, never coloured. The module owns the faces: `td-bold`, `td-italic`, `td-bolditalic`, `td-code`, `td-link` (the body face), the heading levels, and `td-rule` (a face two pixels tall), each carrying nothing but a `-font`. The geometry tags carry layout and no font: `td-margin` the host's margin itself, `td-list` and `td-list<depth>` the list hanging indents, `td-quote` a quote's inset, and `td-tblwin` the margins of the character holding a table's grid, all set from the margin the host names with `-margin`.
+
+`td-margin` is configured by `tags` and exists from then on; `refit -margin` only reconfigures it. Everything `body`, `prose` and `runs` paint carries it alongside the host's base tags: prose, list and quote lines, rules, an image or its alt text, a table's window character, and a code block under `codeTags`. The host therefore states its measure once, as `-margin`. `td-margin` is kept the lowest-priority tag on the widget, so any tag that sets a margin of its own wins where the two stack: a host tag, created before `tags` or after it, and the module's `td-list`, `td-quote` and `td-tblwin`.
 
 Colour and selection stay the host's everywhere. A caller passes its own base tags into every emit call, and each styled span stacks the module's face over those base tags, so only the typeface changes and the host's ink and layout hold underneath. Where a block has ink of its own, the host configures a `td-*` tag for it; the module lays or reads that tag and never sets its colour:
 
@@ -39,6 +41,7 @@ Colour and selection stay the host's everywhere. A caller passes its own base ta
 | `td-rule` | `-background`, the rule's colour | the one line of a rule |
 | `td-grid` | `-background`, the gridline colour | nothing; read when a grid is coloured |
 | `td-spot` | `-background`, a spotlit grid's gridline colour | nothing; read when a grid is spotlit |
+| `td-margin` | nothing; its margins are `-margin`'s | everything `body`, `prose` and `runs` paint |
 
 That split is why the host, not the module, decides the fonts. `tags` takes a dict of Tk font names the host has created to match its own reading font, and the module binds those names onto its faces; `ensure_fonts` supplies a ready set for a host with no faces of its own. A code block goes in one step further: `body` inserts it under a `codeTags` list the host passes outright, because a code block's margins and background are host chrome, not a tkdown face.
 
@@ -69,13 +72,13 @@ Each emit call inserts at an index the caller advances, a mark or `end`, paintin
 
 | Proc | Arguments | Purpose |
 |---|---|---|
-| `ensure_fonts` | | Create the SV\* faces from `TkTextFont` and `TkFixedFont` once per interp and return their fonts dict, `{body SVBody bold SVBodyBold italic SVBodyItalic bolditalic SVBodyBoldItalic mono SVMono}`. `SVMonoBold` is created alongside. |
+| `ensure_fonts` | | Create the Td\* faces from `TkTextFont` and `TkFixedFont` once per interp and return their fonts dict, `{body TdBody bold TdBodyBold italic TdBodyItalic bolditalic TdBodyBoldItalic mono TdMono monobold TdMonoBold}`. A widget given one of these font names before `ensure_fonts` has created it keeps Tk's fallback face even once the font exists, so a host calls `ensure_fonts` before any widget names a font from it. |
 | `tags` | `w fonts ?option value ...?` | Register a text widget: configure its `td-*` faces from the fonts dict, take the options below, and open its table and link registries. Call once per widget before painting; calling again keeps the tables and links it holds. |
 | `body` | `w idx text baseTags codeTags ?emitters?` | Paint a markdown body block by block, then one closing newline under `baseTags`. |
 | `prose` | `w idx text baseTags ?suffix?` | Paint one prose run through `emit_prose`, then `suffix` (default `"\n\n"`) under `baseTags`. |
 | `runs` | `w idx text baseTags` | Insert one run's inline spans. |
 | `link_at` | `w idx` | The url of the link under `idx`, or `""`. |
-| `link_scan` | `w needle nocase` | Search the links' urls: `{index url}` per link whose url holds the needle, in document order, the index being the start of the link's text. |
+| `link_scan` | `w needle nocase` | Search the links' urls: `{index url}` per link whose url holds the needle and whose visible text does not, in document order, the index being the start of the link's text. A match in the text, a bare URL's included, is left to the host's own text search. |
 | `table_scan` | `w needle nocase` | Search the tables' cell text: `{mark excerpt}` per matching table, in document order. |
 | `table_spotlight` | `w idx` | Light the table whose mark is at `idx` and put out the one lit before; `""` puts it out. |
 | `refit` | `w ?option value ...?` | Re-set any option, re-derive the margins, and re-fit every built grid. |
@@ -86,13 +89,13 @@ The options, each re-settable through `refit`:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `-margin` | `{0 0}` | The host's base margin, `{left right}` or one distance for both. Lists and quotes indent from it, a grid sits at its left edge and spends the width between the two. |
+| `-margin` | `{0 0}` | The host's base margin, `{left right}` or one distance for both, held by `td-margin`. Lists and quotes indent from it, a grid sits at its left edge and spends the width between the two. |
 | `-quotetags` | `{}` | Tags the default quote emitter lays over a whole quote, for the host's ink and inset. |
 | `-image_cmd` | `{}` | A command called with an image's path, returning a Tk image name or `""`. |
-| `-on_block` | `{}` | A command told of each block `body` paints. |
-| `-copystyle` | `Copy.TButton` | The ttk style of a grid's copy button. A style ttk has no layout for falls back to `TButton`. |
+| `-on_block` | `{}` | A command told of each block `body` paints. An empty block, the blank lines between two other blocks, is not reported. |
+| `-copystyle` | `Copy.TButton` | The ttk style of a grid's copy button, a style the host defines. Until the host defines it, or for any style ttk has no layout for, the module falls back to `TButton`. |
 
-The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic` and `mono`; a missing one is an error, and extra keys are kept but nothing draws with them. The heading keys `h1`, `h2` and `h3` are optional, each falling back to `bold`. Levels four through six all paint as `h3`, so a document never asks for a face the host did not size.
+The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic` and `mono`; a missing one is an error. `monobold` is optional and, like any extra key, is kept for the host; nothing in the module draws with it. The heading keys `h1`, `h2` and `h3` are optional, each falling back to `bold`. Levels four through six all paint as `h3`, so a document never asks for a face the host did not size.
 
 ### Blocks and emitters
 
@@ -109,7 +112,7 @@ The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic` and `mon
 
 Every block ends its own line before the next begins. The walk closes a prose block's last line itself, and closes any other block's line its emitter left open, so a table under a list starts on a line of its own.
 
-After each block, `-on_block` is called as `cmd kind start end text`: `start` and `end` are the indices bounding everything the block inserted, `end` exclusive, and `text` is the block's text (a quote's de-quoted, a table's as GFM, an image's alt, a rule's empty). It fires for every block `body` paints, each time it paints it, so a host that repaints a range hears its blocks again.
+After each block, `-on_block` is called as `cmd kind start end text`: `start` is the first character of the block's own content and `end` the index just past everything it inserted, exclusive. A newline an emitter writes ahead of a quote, rule, image or table to set it off, such as the blank line the default quote emitter puts between prose and a quote, lies before `start`, so a host inserting at `start` lands on the block's first painted line. `text` is the block's text (a quote's de-quoted, a table's as GFM, an image's alt, a rule's empty). It fires for every non-empty block `body` paints, each time it paints it, so a host that repaints a range hears its blocks again; a prose block of nothing but blank lines, the gap between two other blocks, is painted and not reported.
 
 The default prose emitter lifts a heading line out under `td-h1`, `td-h2` or `td-h3`: an ATX line, or a line of text over a setext underline. Within prose a `---` under a line of text is that line's underline, not a rule. A list paints one logical line per item: the marker, then the item text through the inline-run path, so markdown inside an item still styles. Each item carries `td-list` and `td-list<depth>`, a hanging indent that sets the marker 10 pixels inside the host's margin plus 18 a level and lands the item text, and any line it wraps to, 20 pixels past the marker. An item more than one level below the item before it is drawn one level below it.
 

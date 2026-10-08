@@ -19,8 +19,7 @@ package require Tk
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package prefer latest
-package require tkdown
+package require -exact tkdown 2.0a2
 
 set fails 0
 proc check {name got want} {
@@ -81,7 +80,8 @@ text .r
 ::tkdown::runs .r end "hello **world** and `code` here" base
 check "td-bold covers exactly the emphasised word" [tagtext .r td-bold] "world"
 check "td-code covers exactly the code span" [tagtext .r td-code] "code"
-check "plain text carries only the base tag" [.r tag names 1.0] "base"
+check "plain text carries the base tag and td-margin" \
+    [lsort [.r tag names 1.0]] {base td-margin}
 check "an emphasis span still stacks the base tag" \
     [expr {"base" in [.r tag names [lindex [.r tag ranges td-bold] 0]]}] 1
 # Italic / bolditalic on their own faces.
@@ -221,8 +221,8 @@ set WIDE "intro
 ::tkdown::body $G end $WIDE base code
 check "a table makes one window" [llength [$G dump -window 1.0 end]] 3
 check "and one mark" [tblmarks $G] tbl#m1
-check "the window character carries td-tblwin and the base tags" \
-    [lsort [$G tag names tbl#m1]] {base td-tblwin}
+check "the window character carries td-tblwin, td-margin and the base tags" \
+    [lsort [$G tag names tbl#m1]] {base td-margin td-tblwin}
 check "the mark sits on the window character" \
     [lindex [$G dump -window tbl#m1] 0] window
 check "the prose above ends its line before the table" \
@@ -441,16 +441,21 @@ check "destroying a pane with a grid unregisters it" \
 check "and drops its grid bindtag's bindings" [bind tkdown.grid$G] {}
 
 # ---- 12. ensure_fonts --------------------------------------------------------
-set SV [::tkdown::ensure_fonts]
-check "ensure_fonts returns the SV* fonts dict" $SV \
-    {body SVBody bold SVBodyBold italic SVBodyItalic bolditalic SVBodyBoldItalic mono SVMono}
-check "every face it names exists, SVMonoBold too" \
-    [lmap f [concat [dict values $SV] SVMonoBold] { expr {$f in [font names]} }] \
-    {1 1 1 1 1 1}
-check "a second call creates nothing and returns the same" [::tkdown::ensure_fonts] $SV
-check "SVBodyBold is TkTextFont's family in bold" \
-    [list [font actual SVBodyBold -family] [font actual SVBodyBold -weight]] \
+set TF [::tkdown::ensure_fonts]
+check "ensure_fonts returns the Td* fonts dict" $TF \
+    {body TdBody bold TdBodyBold italic TdBodyItalic bolditalic TdBodyBoldItalic mono TdMono monobold TdMonoBold}
+check "every face it names exists" \
+    [lmap f [dict values $TF] { expr {$f in [font names]} }] {1 1 1 1 1 1}
+check "a second call creates nothing and returns the same" [::tkdown::ensure_fonts] $TF
+check "TdBodyBold is TkTextFont's family in bold" \
+    [list [font actual TdBodyBold -family] [font actual TdBodyBold -weight]] \
     [list [font actual TkTextFont -family] bold]
+check "TdMonoBold is TkFixedFont's family in bold" \
+    [list [font actual TdMonoBold -family] [font actual TdMonoBold -weight]] \
+    [list [font actual TkFixedFont -family] bold]
+text .tf
+check "tags takes the dict, monobold and all" [catch {::tkdown::tags .tf $TF}] 0
+destroy .tf
 
 # ---- 13. the walk: blocks, their newlines and -on_block -----------------------
 set ::blocks {}
@@ -462,19 +467,25 @@ check "-on_block hears every block in order" [lmap b $::blocks { lindex $b 0 }] 
     {prose code quote rule image table prose}
 check "the blocks run from the start to the body's closing newline" \
     [list [lindex $::blocks 0 1] [lindex $::blocks end 2]] [list 1.0 [.b index end-2c]]
-set adjacent 1
+set gaps {}
 foreach a [lrange $::blocks 0 end-1] b [lrange $::blocks 1 end] {
-    if {[lindex $a 2] ne [lindex $b 1]} { set adjacent 0 }
+    lappend gaps [.b get [lindex $a 2] [lindex $b 1]]
 }
-check "each block starts where the one before it ended" $adjacent 1
+check "only the quote's setting-off newline lies between blocks" \
+    $gaps [list "" "\n" "" "" "" ""]
 check "each block's range holds what it painted" \
     [lmap b $::blocks { .b get [lindex $b 1] [lindex $b 2] }] \
-    [list "intro\n" "code line\n" "\n▏ q1\n" " \n" "alt\n" "\n" "\nafter\n"]
+    [list "intro\n" "code line\n" "▏ q1\n" " \n" "alt\n" "\n" "\nafter\n"]
 check "the table's range holds its window" \
     [llength [.b dump -window [lindex $::blocks 5 1] [lindex $::blocks 5 2]]] 3
 check "each block hears its text" [lmap b $::blocks { lindex $b 3 }] \
     [list intro "code line" q1 "" alt "| a | b |\n| --- | --- |\n| 1 | 2 |" "\nafter"]
-check "code goes in under codeTags alone" [.b tag names [lindex $::blocks 1 1]] code
+check "code goes in under codeTags and td-margin" \
+    [lsort [.b tag names [lindex $::blocks 1 1]]] {code td-margin}
+set qs [lindex $::blocks 2 1]
+.b insert $qs "HOST\n"
+check "an insert at a quote's start lands on the quote's first line" \
+    [.b get "$qs linestart" "$qs +1l lineend"] "HOST\n▏ q1"
 ::tkdown::forget .b
 
 # A table under a list starts on a line of its own.
@@ -525,7 +536,7 @@ check "a nested > stays literal" [.q get 4.0 "4.0 lineend"] "▏ > inner"
 check "the block carries td-quote" [tagtext .q td-quote] "▏ one it\n▏ > inner\n"
 set i [lindex [.q tag ranges td-italic] 0]
 check "a quote's runs carry the base tags and -quotetags" \
-    [lsort [.q tag names $i]] {base qink qinset td-italic td-quote}
+    [lsort [.q tag names $i]] {base qink qinset td-italic td-margin td-quote}
 check "td-quote insets from the margin" \
     [list [.q tag cget td-quote -lmargin1] [.q tag cget td-quote -lmargin2]] {20 20}
 .q delete 1.0 end
@@ -540,7 +551,8 @@ text .x
 ::tkdown::tags .x $FA
 ::tkdown::body .x end "para\n\n---\n\nmore" base code
 check "a rule is one line of a space under td-rule" [tagtext .x td-rule] " \n"
-check "and the base tags" [lsort [.x tag names [lindex [.x tag ranges td-rule] 0]]] {base td-rule}
+check "and the base tags and td-margin" \
+    [lsort [.x tag names [lindex [.x tag ranges td-rule] 0]]] {base td-margin td-rule}
 check "td-rule's face is TdRule, two pixels" \
     [list [.x tag cget td-rule -font] [font configure TdRule -size]] {TdRule -2}
 .x delete 1.0 end
@@ -565,7 +577,7 @@ proc img_for {path} { lappend ::asked $path; expr {$path eq "dot.png" ? "dot" : 
 ::tkdown::body .x end "!\[d\](dot.png)\n!\[gone\](none.png)" base code
 check "-image_cmd is asked for each path" $::asked {dot.png none.png}
 check "an image it returns is embedded" [lindex [.x dump -image 1.0 end] 1] dot
-check "under the base tags" [.x tag names 1.0] base
+check "under the base tags and td-margin" [lsort [.x tag names 1.0]] {base td-margin}
 check "an empty answer falls back to the alt" [.x get 2.0 "2.0 lineend"] gone
 
 # ---- 17. links -----------------------------------------------------------------
@@ -576,12 +588,18 @@ text .k
 check "a link's text lies under td-link" [tagtext .k td-link] "docshttps://y.org/e"
 check "td-link carries the body face" [.k tag cget td-link -font] [dict get $FA body]
 set d [lindex [.k tag ranges td-link] 0]
-check "a link's characters carry base, td-link and its own tag" \
-    [regexp {^base td-link td-link\d+$} [lsort [.k tag names $d]]] 1
+check "a link's characters carry base, td-link, its own tag and td-margin" \
+    [regexp {^base td-link td-link\d+ td-margin$} [lsort [.k tag names $d]]] 1
 check "link_at gives the url under an index" [::tkdown::link_at .k "$d +2c"] https://x.org/D
 check "and nothing off a link" [::tkdown::link_at .k 1.0] ""
-check "link_scan finds by url, document order" [::tkdown::link_scan .k org 0] \
-    [list [list $d https://x.org/D] [list [.k search https://y 1.0] https://y.org/e]]
+check "link_scan finds by url, a url its text also shows left out" \
+    [::tkdown::link_scan .k org 0] [list [list $d https://x.org/D]]
+::tkdown::runs .k end { [w](https://w.org/z)} base
+check "link_scan gives its hits in document order" \
+    [lmap h [::tkdown::link_scan .k .org/ 0] { lindex $h 1 }] {https://x.org/D https://w.org/z}
+check "a needle in a link's text is not link_scan's" \
+    [::tkdown::link_scan .k docs 1] {}
+check "nor is a bare url, its text being its url" [::tkdown::link_scan .k y.org 1] {}
 check "link_scan honours case when asked" [::tkdown::link_scan .k x.org/d 0] {}
 check "link_scan folds case when asked" [llength [::tkdown::link_scan .k X.ORG/D 1]] 1
 check "an empty needle finds nothing" [::tkdown::link_scan .k "" 1] {}
@@ -617,6 +635,51 @@ check "refit moves every depth with the margin" \
 check "a nested item's text still styles" \
     [catch {::tkdown::body .n end "- x\n  - **y**" base code}] 0
 check "inside it" [tagtext .n td-bold] y
+
+# ---- 19. td-margin --------------------------------------------------------------
+# A host tag with a margin of its own, configured before tags is called.
+text .m
+.m tag configure early -lmargin1 77
+::tkdown::tags .m $FA -margin {24 30}
+check "td-margin exists from tags on" \
+    [list [.m tag cget td-margin -lmargin1] [.m tag cget td-margin -rmargin]] {24 30}
+::tkdown::body .m end "para\n\n- item\n\n> q" base code
+proc marginof {w idx opt} {
+    foreach tag [lreverse [$w tag names $idx]] {
+        set v [$w tag cget $tag $opt]
+        if {$v ne ""} { return $v }
+    }
+    return 0
+}
+check "a prose line carries td-margin" [expr {"td-margin" in [.m tag names 1.0]}] 1
+check "a prose line's margins are -margin's" \
+    [list [marginof .m 1.0 -lmargin1] [marginof .m 1.0 -rmargin]] {24 30}
+set li [lindex [.m tag ranges td-list] 0]
+check "a list line carries td-margin" [expr {"td-margin" in [.m tag names $li]}] 1
+check "a list line's lmargin1 is the list indent, past the margin" \
+    [marginof .m $li -lmargin1] [.m tag cget td-list0 -lmargin1]
+check "which is more than the margin" [expr {[marginof .m $li -lmargin1] > 24}] 1
+set qi [lindex [.m tag ranges td-quote] 0]
+check "a quote line's inset wins over td-margin" [marginof .m $qi -lmargin1] 38
+::tkdown::refit .m -margin 60
+check "refit moves a prose line's margins" \
+    [list [marginof .m 1.0 -lmargin1] [marginof .m 1.0 -rmargin]] {60 60}
+check "td-margin stays lowest after refit" [lindex [.m tag names] 0] td-margin
+.m tag configure late -lmargin1 99
+.m delete 1.0 end
+::tkdown::runs .m end "x" {base early}
+::tkdown::runs .m end "\ny" {base late}
+check "a host tag created before tags wins over td-margin" [marginof .m 1.0 -lmargin1] 77
+check "and so does one created after" [marginof .m 2.0 -lmargin1] 99
+
+# ---- 20. -on_block skips the blank line between blocks ------------------------
+set ::blocks {}
+text .ob
+::tkdown::tags .ob $FA -on_block heard
+::tkdown::body .ob end "> q\n\n---" base code
+check "a quote, blank line, rule reports quote and rule" \
+    [lmap b $::blocks { lindex $b 0 }] {quote rule}
+check "the blank line is still painted" [.ob get 1.0 end-1c] "▏ q\n\n \n\n"
 
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails

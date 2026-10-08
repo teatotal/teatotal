@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.0a1
+package provide tkdown 2.0a2
 
 namespace eval ::tkdown {
     namespace export parse_inline segment_code_fences segment_blockquotes \
@@ -1044,28 +1044,31 @@ proc ::tkdown::url_trim {url} {
 }
 
 
-# The SV* reading faces, derived from TkTextFont and TkFixedFont and created
+# The Td* reading faces, derived from TkTextFont and TkFixedFont and created
 # once per interp, as the fonts dict tags wants. A host with faces of its
-# own passes those to tags instead.
+# own passes those to tags instead. A widget that names one of these fonts
+# before it exists keeps Tk's fallback face after it is created, so a host
+# calls this before any widget names them.
 proc ::tkdown::ensure_fonts {} {
-    if {"SVBody" ni [font names]} {
+    if {"TdBody" ni [font names]} {
         set text [font actual TkTextFont]
         set mono [font actual TkFixedFont]
-        font create SVBody           {*}$text
-        font create SVBodyBold       {*}$text -weight bold
-        font create SVBodyItalic     {*}$text -slant italic
-        font create SVBodyBoldItalic {*}$text -weight bold -slant italic
-        font create SVMono           {*}$mono
-        font create SVMonoBold       {*}$mono -weight bold
+        font create TdBody           {*}$text
+        font create TdBodyBold       {*}$text -weight bold
+        font create TdBodyItalic     {*}$text -slant italic
+        font create TdBodyBoldItalic {*}$text -weight bold -slant italic
+        font create TdMono           {*}$mono
+        font create TdMonoBold       {*}$mono -weight bold
     }
-    return [dict create body SVBody bold SVBodyBold italic SVBodyItalic \
-        bolditalic SVBodyBoldItalic mono SVMono]
+    return [dict create body TdBody bold TdBodyBold italic TdBodyItalic \
+        bolditalic TdBodyBoldItalic mono TdMono monobold TdMonoBold]
 }
 
 # Register a text widget for emission and configure the td-* faces on it.
 # fonts is a dict of Tk font names: body bold italic bolditalic mono are
 # required; h1 h2 h3 are optional heading faces falling back to bold. Extra
-# keys are kept but nothing draws with them. The options are those refit
+# keys, monobold among them, are kept for the host but nothing here draws
+# with them. The options are those refit
 # re-sets: -margin {left right} (or one n for both) is the host's base margin
 # in screen distance, -copystyle the ttk style of a grid's copy button,
 # -quotetags the tags the quote emitter lays over a quote, -image_cmd the
@@ -1157,7 +1160,10 @@ proc ::tkdown::options {w reg opts} {
     return $reg
 }
 
-# The geometry tags, offset from the host's margin. A list item at depth d
+# The geometry tags, offset from the host's margin. td-margin is the margin
+# itself, laid on everything body, prose and runs paint, and kept lowest of
+# all w's tags so that any other tag setting a margin, the host's or the
+# td-* ones below, wins where it stacks. A list item at depth d
 # carries td-list and td-list<d>: the marker sits 10 px in plus 18 px a
 # level, and the item text (and any wrapped continuation) 20 px past that.
 # td-quote insets a quote block, bar included. A grid sits at the margin
@@ -1170,6 +1176,8 @@ proc ::tkdown::margins {w} {
         }
     }
     lassign [dict get [set ::tkdown::widgets] $w margin] l r
+    $w tag configure td-margin -lmargin1 $l -lmargin2 $l -rmargin $r
+    $w tag lower td-margin
     $w tag configure td-quote -lmargin1 [expr {$l + 14}] \
         -lmargin2 [expr {$l + 14}] -rmargin $r
     $w tag configure td-tblwin -lmargin1 $l -lmargin2 $l -rmargin $r
@@ -1192,6 +1200,12 @@ proc ::tkdown::unregister {w} {
     dict unset widgets $w
 }
 
+# tags with td-margin added, once.
+proc ::tkdown::with_margin {tags} {
+    if {"td-margin" ni $tags} { lappend tags td-margin }
+    return $tags
+}
+
 # Insert one prose run's inline spans at idx. Each styled chunk stacks its
 # td-* face over baseTags, so only the -font changes and the host's colour
 # and margins hold. A link's text also carries td-link, for the host's ink
@@ -1199,6 +1213,7 @@ proc ::tkdown::unregister {w} {
 # its url (link_at, link_scan).
 proc ::tkdown::runs {w idx text baseTags} {
     variable widgets
+    set baseTags [::tkdown::with_margin $baseTags]
     foreach run [::tkdown::parse_inline $text] {
         lassign $run style chunk url
         set tags $baseTags
@@ -1221,6 +1236,7 @@ proc ::tkdown::runs {w idx text baseTags} {
 # Insert a prose run at idx through the prose emitter, closed by suffix (a
 # rendering concern, passed rather than parsed).
 proc ::tkdown::prose {w idx text baseTags {suffix "\n\n"}} {
+    set baseTags [::tkdown::with_margin $baseTags]
     ::tkdown::emit_prose $w $idx $text $baseTags
     if {$suffix ne ""} { $w insert $idx $suffix $baseTags }
 }
@@ -1238,8 +1254,11 @@ proc ::tkdown::prose {w idx text baseTags {suffix "\n\n"}} {
 #   image w idx alt path baseTags  rule  w idx baseTags
 # with a quote's text de-quoted and a table's payload segment_tables'.
 # Code goes in under codeTags, named by the host outright, because a code
-# block's chrome (margins, ink) is host styling, not a tkdown face.
+# block's chrome (margins, ink) is host styling, not a tkdown face. Both tag
+# lists gain td-margin, so every emitter, the host's too, paints within it.
 proc ::tkdown::body {w idx text baseTags codeTags {emitters {}}} {
+    set baseTags [::tkdown::with_margin $baseTags]
+    set codeTags [::tkdown::with_margin $codeTags]
     set em [::tkdown::emitters $emitters]
     set code [dict get $em code]
     set segs [expr {$code eq "" ? [list [list prose $text]]
@@ -1322,8 +1341,11 @@ proc ::tkdown::walk {w idx text baseTags em stages} {
 # Paint one block by running cmd, then end its line: a prose block always
 # (a prose emitter leaves its last line open), any other only when its
 # emitter left it open. Then -on_block hears {kind start end text}, start
-# and end bounding everything the block inserted, end exclusive; text is
-# the block's text (a table's as GFM, an image's alt, a rule's empty).
+# the block's first character of content and end just past everything it
+# inserted; the newlines a quote, rule, image or table emitter writes ahead
+# of its content to set it off lie before start. text is the block's text (a table's as GFM, an image's alt, a rule's empty). A
+# prose block of blank lines, the gap between two other blocks, is painted
+# but not reported.
 proc ::tkdown::block {w idx kind text baseTags cmd} {
     variable widgets
     variable blockseq
@@ -1338,8 +1360,15 @@ proc ::tkdown::block {w idx kind text baseTags cmd} {
     }
     set start [$w index $m]
     $w mark unset $m
+    if {$kind ni {prose code}} {
+        while {[$w compare $start < $at] && [$w get $start] eq "\n"} {
+            set start [$w index "$start +1c"]
+        }
+    }
     set on [dict get $widgets $w on_block]
-    if {$on ne ""} { {*}$on $kind $start $at $text }
+    if {$on ne "" && !($kind eq "prose" && [string trim $text] eq "")} {
+        {*}$on $kind $start $at $text
+    }
 }
 
 # The index where an insert at idx lands: idx itself, or the last newline's
@@ -1429,23 +1458,35 @@ proc ::tkdown::link_at {w idx} {
 }
 
 # Search the links' urls, which the text does not show unless the link's
-# text is its url. One hit per link, in document order: {index url}, index
-# being the start of the link's text. A link whose text is gone leaves the
-# registry here.
+# text is its url. One hit per link whose url holds the needle and whose
+# text does not, a match in the text being the host's own search's to find,
+# in document order: {index url}, index being the start of the link's text.
+# A link whose text is gone leaves the registry here.
 proc ::tkdown::link_scan {w needle nocase} {
     variable widgets
     if {![dict exists $widgets $w] || $needle eq ""} { return {} }
     if {$nocase} { set needle [string tolower $needle] }
     set out [list]
     dict for {tag url} [dict get $widgets $w links] {
-        set at [lindex [$w tag ranges $tag] 0]
+        set ranges [$w tag ranges $tag]
+        set at [lindex $ranges 0]
         if {$at eq ""} {
             $w tag delete $tag
             dict unset widgets $w links $tag
             continue
         }
-        set hay [expr {$nocase ? [string tolower $url] : $url}]
-        if {[string first $needle $hay] >= 0} { lappend out [list $at $url] }
+        set shown ""
+        foreach {a b} $ranges { append shown [$w get $a $b] }
+        if {$nocase} {
+            set url_hay [string tolower $url]
+            set shown [string tolower $shown]
+        } else {
+            set url_hay $url
+        }
+        if {[string first $needle $url_hay] >= 0
+                && [string first $needle $shown] < 0} {
+            lappend out [list $at $url]
+        }
     }
     return [lsort -command [list ::tkdown::mark_order $w] $out]
 }
@@ -1587,8 +1628,12 @@ proc ::tkdown::emit_rule {w idx baseTags} {
 # the payload, the cells' text as the reader sees it, and a mark on the
 # window character. Per table the registry keeps
 #   mark frame payload base flat lit fbtok cells
-# base being the baseTags the table was painted under and lit whether it
-# is the spotlit table.
+# where mark is tbl#m<N> on the window character, frame the grid's path
+# (built or not), payload the parsed {align rows}, base the baseTags the
+# table was painted under, flat the cells' text with inline markers
+# dropped, for scan, lit whether it is the spotlit table, fbtok the copy
+# button's pending ✓ reset token, and cells the cell widget paths, empty
+# until built.
 
 # The default table emitter: paint a parsed GFM table {align rows} at idx,
 # the window character under td-tblwin (its margins, raised over the base
