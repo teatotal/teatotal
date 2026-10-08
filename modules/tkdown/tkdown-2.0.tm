@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.0a3
+package provide tkdown 2.0
 
 namespace eval ::tkdown {
     namespace export parse_inline segment_code_fences segment_blockquotes \
