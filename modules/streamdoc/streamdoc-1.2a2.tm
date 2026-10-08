@@ -1,6 +1,6 @@
 package require Tcl 9
 package require Tk
-package provide streamdoc 1.2a1
+package provide streamdoc 1.2a2
 
 namespace eval ::streamdoc {}
 
@@ -54,9 +54,11 @@ namespace eval ::streamdoc {}
 # Anti-self-scroll: `batch` brackets a streamed mutation with anchor_save /
 # anchor_restore, so content landing below a parked reader never moves the
 # line they are on. With -autofollow on and the reader at the tail, the view
-# latches there and follows appends (the tail -f contract), released the
-# moment they scroll away; <<AtBottom>> / <<LeftBottom>> fire on the host
-# frame at the edges, and `follow` jumps back to the tail.
+# latches there and follows appends (the tail -f contract). Only the reader
+# lets go of the latch: their own scrolling, `scroll_to`, a fold or detail
+# toggle, or a reveal away from the last line. Growth they did not ask for
+# leaves it held and re-follows. <<AtBottom>> / <<LeftBottom>> fire on the
+# host frame at the edges, and `follow` jumps back to the tail.
 #
 # Find (Ctrl-F): a bar under the text whose entry collects every literal
 # hit, folded and hidden text included, tags it `find`, and steps through
@@ -83,7 +85,9 @@ oo::class create ::streamdoc::StreamDoc {
     variable Cur          ;# index of the open region, or -1
     variable Opts         ;# widget options decoupling the base class from any host
     variable NextSave     ;# savepoint mark counter
-    variable AtBottom     ;# tail-latch state across a streaming batch
+    variable Latched      ;# 1 while the view is held on the tail
+    variable FollowAfter  ;# the pending idle re-follow, "" none
+    variable AnchorY      ;# the anchored line's y, for its pixel offset
     variable WasAtBottom  ;# last observed bottom state, edges fire the events
     variable Find         ;# the find bar's frame
     variable FindVar      ;# the find entry's text
@@ -202,15 +206,20 @@ oo::class create ::streamdoc::StreamDoc {
             -borderwidth 0 -highlightthickness 0 -padx 8 -pady 8 \
             -font [my opt font] -insertwidth 0
         ttk::scrollbar $parent.sb -orient vertical \
-            -command [list $parent.text yview]
+            -command [list [self] scroll_to]
         grid $parent.text -row 0 -column 0 -sticky nsew
         grid $parent.sb   -row 0 -column 1 -sticky ns
         grid columnconfigure $parent 0 -weight 1
         grid rowconfigure    $parent 0 -weight 1
         set Text $parent.text
         my find_seed
+        my latch_seed
         my build_find
     }
+
+    # The text widget, for tag configuration, tag bindings, and painting at
+    # the door through a painter that takes a widget and an index.
+    method textwidget {} { return $Text }
 
     # Text widget yview update: forward to the scrollbar, and edge-detect the
     # tail so a host can mirror the tail -f contract: <<AtBottom>> fires on the
@@ -229,26 +238,109 @@ oo::class create ::streamdoc::StreamDoc {
     # Jump to the tail and latch there. With -autofollow on the view keeps
     # following streamed appends until the reader scrolls away.
     method follow {} {
+        set Latched 1
         $Text yview moveto 1
+    }
+
+    # ---- the tail latch --------------------------------------------------
+    #
+    # The latch is let go only by the reader: wheel and touchpad scrolling
+    # and the scroll keys on the text, the scrollbar and `scroll_to`, a fold
+    # or detail toggle, a reveal away from the last line. Everything else
+    # that moves the tail - an append, an embedded window realised or grown
+    # late, a resize of the text - leaves it held and re-follows on idle. It
+    # takes hold through `follow`, or at a batch that finds the view on the
+    # tail. setup and reset both seed it, as with find.
+    method latch_seed {} {
+        if {[info exists Latched]} return
+        set Latched 0
+        set FollowAfter ""
+        foreach ev {<MouseWheel> <Button-4> <Button-5> <TouchpadScroll>
+                <Prior> <Next> <Up> <Down> <Home> <End>} {
+            catch {bind $Text $ev +[list [self] latch_release]}
+        }
+        bind $Text <Configure> +[list [self] refollow_later]
+    }
+    method latch_release {} { set Latched 0 }
+    method latched {} {
+        return [expr {[my opt autofollow] && [info exists Latched] && $Latched}]
+    }
+
+    # A scroll on the reader's behalf: forwards to the text's yview and lets
+    # go of the latch. The scrollbar's command, and the way a host scrolls.
+    method scroll_to {args} {
+        if {[llength $args]} { set Latched 0 }
+        return [$Text yview {*}$args]
+    }
+
+    # One idle re-follow at a time, by which point the growth has landed.
+    method refollow_later {} {
+        if {![my latched] || $FollowAfter ne ""} return
+        set FollowAfter [after idle [list [self] refollow]]
+    }
+    method refollow {} {
+        set FollowAfter ""
+        if {[my latched] && [lindex [$Text yview] 1] < 1.0} {
+            $Text yview moveto 1
+        }
+    }
+
+    # An embedded window's <Configure>: realised or resized. One in view or
+    # below it, which for a latched view is the tail, re-follows.
+    method window_grew {w} {
+        if {![my latched] || [catch {$Text index $w} i]} return
+        if {[$Text compare $i >= @0,0]} { my refollow_later }
+    }
+    method window_watch {w} {
+        bind $w <Configure> +[list [self] window_grew $w]
+        return $w
+    }
+    # -create's script, run where Tk would run it, its window watched; ""
+    # is Tk's "no window" and passes through.
+    method window_realise {script} {
+        set w [uplevel #0 $script]
+        if {$w ne ""} { my window_watch $w }
+        return $w
+    }
+
+    destructor {
+        if {[info exists FollowAfter] && $FollowAfter ne ""} {
+            after cancel $FollowAfter
+        }
     }
 
     # ---- view-anchoring around streaming appends -----------------------
     #
     # A streamed append must not shift what the reader is looking at. The
     # document is append-only, so two cases cover it: with -autofollow on and
-    # the reader at the tail, keep them latched there so appends keep scrolling
-    # into view; otherwise pin the character that was at the top of the
-    # viewport, so a summary pop or rewind near the tail cannot tug the view.
+    # the latch held, keep the view on the tail so appends keep scrolling into
+    # view, then once more on idle for growth that lands after the batch;
+    # otherwise pin the character that was at the top of the viewport, so a
+    # summary pop or rewind near the tail cannot tug the view. The pin keeps
+    # that line's pixel offset too: `yview` on a mark alone would snap a tall
+    # line part-scrolled off the top, an embedded table say, to its top edge.
+    # A batch that finds the view on the tail takes the latch; none lets go
+    # of it.
     method anchor_save {} {
-        set AtBottom [expr {[lindex [$Text yview] 1] >= 0.999}]
+        if {[my opt autofollow] && [lindex [$Text yview] 1] >= 0.999} {
+            set Latched 1
+        }
         $Text mark set AnchorTop @0,0
         $Text mark gravity AnchorTop left
+        set AnchorY [lindex [$Text dlineinfo AnchorTop] 1]
     }
     method anchor_restore {} {
-        if {[my opt autofollow] && [info exists AtBottom] && $AtBottom} {
+        if {[my latched]} {
             $Text yview moveto 1
+            my refollow_later
         } else {
-            catch {$Text yview AnchorTop}
+            catch {
+                $Text yview AnchorTop
+                set y [lindex [$Text dlineinfo AnchorTop] 1]
+                if {$AnchorY ne "" && $y ne "" && $y != $AnchorY} {
+                    $Text yview scroll [expr {$y - $AnchorY}] pixels
+                }
+            }
         }
         catch {$Text mark unset AnchorTop}
     }
@@ -341,6 +433,7 @@ oo::class create ::streamdoc::StreamDoc {
         }
         # The buffer goes, and every hit index with it.
         my find_seed
+        my latch_seed
         set FindMatches [list]
         set FindCur -1
         set FindPos ""
@@ -384,8 +477,17 @@ oo::class create ::streamdoc::StreamDoc {
         $Text insert $mark $text $tags
         return [list $i0 [$Text index $mark]]
     }
+    # The window, or the one -create builds, is watched so that its growth at
+    # the tail re-follows a latched view.
     method emit_window {mark args} {
         set i0 [$Text index $mark]
+        if {[dict exists $args -create]} {
+            dict set args -create \
+                [list [self] window_realise [dict get $args -create]]
+        }
+        if {[dict exists $args -window]} {
+            my window_watch [dict get $args -window]
+        }
         $Text window create $mark {*}$args
         return [list $i0 [$Text index $mark]]
     }
@@ -486,8 +588,12 @@ oo::class create ::streamdoc::StreamDoc {
     }
 
     # ---- fold and detail layers -------------------------------------------
+    #
+    # Each is a reader's action and lets go of the tail latch: a reader at
+    # the tail unfolding the last region keeps the header they clicked.
 
     method fold {n} {
+        set Latched 0
         set R [lindex $Regions $n]
         if {[dict get $R folded]} return
         # An open region's fold range is unsealed; cover what stands now, and
@@ -506,6 +612,7 @@ oo::class create ::streamdoc::StreamDoc {
     }
 
     method unfold {n} {
+        set Latched 0
         set R [lindex $Regions $n]
         if {![dict get $R folded]} return
         # d#N stays hidden: unfolding shows the region's prose and summary,
@@ -527,6 +634,7 @@ oo::class create ::streamdoc::StreamDoc {
     }
 
     method detail_show {n} {
+        set Latched 0
         set R [lindex $Regions $n]
         if {[dict get $R shown]} return
         $Text tag configure d#$n -elide 0
@@ -539,6 +647,7 @@ oo::class create ::streamdoc::StreamDoc {
     }
 
     method detail_hide {n} {
+        set Latched 0
         set R [lindex $Regions $n]
         if {![dict get $R shown]} return
         $Text tag configure d#$n -elide 1
@@ -560,9 +669,11 @@ oo::class create ::streamdoc::StreamDoc {
 
     # Fold every region: the table-of-contents reading, one header per region.
     method fold_all {} {
+        set Latched 0
         for {set n 0} {$n < [llength $Regions]} {incr n} { my fold $n }
     }
     method expand_all {} {
+        set Latched 0
         for {set n 0} {$n < [llength $Regions]} {incr n} { my unfold $n }
     }
 
@@ -645,16 +756,22 @@ oo::class create ::streamdoc::StreamDoc {
     # puts its line on the top edge, or as near as the widget scrolls when
     # the index sits in the last screenful. on_reveal runs ahead of all of
     # it, so a window the scroll realises is born in the state the host set.
+    #
+    # A jump is the reader's: it lets go of the tail latch, unless its target
+    # sits on the last line, where a held latch stays held.
     method reveal {idx {align see}} {
         if {$align ni {see top}} {
             error "bad align \"$align\": must be see or top"
         }
         my on_reveal $idx
+        set held [expr {[my latched]
+            && [$Text compare "$idx linestart" >= "end - 2 chars linestart"]}]
         set n [my region_at $idx]
         if {$n >= 0} {
             if {[dict get [lindex $Regions $n] folded]} { my unfold $n }
             if {"d#$n" in [$Text tag names $idx]} { my detail_show $n }
         }
+        set Latched $held
         update idletasks
         $Text sync
         if {$align eq "top"} {

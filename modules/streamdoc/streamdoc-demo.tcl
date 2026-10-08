@@ -4,7 +4,7 @@
 # a host supplies content and look through the door, the hooks and plain tag
 # configuration - no other application code is involved.
 #
-# Run it with bare wish:   wish9.0 demos/streamdoc-demo.tcl
+# Run it with bare wish:   wish9.0 modules/streamdoc/streamdoc-demo.tcl
 #
 # Try: turn on "Stream steps" and watch regions pour in while you read -
 # scroll anywhere and your line holds. Click a step's header to fold it, its
@@ -18,7 +18,7 @@ package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
 foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
-package require -exact streamdoc 1.2a1
+package require -exact streamdoc 1.2a2
 
 font create DocBody {*}[font actual TkTextFont]
 font create DocHead {*}[font actual TkTextFont] -weight bold

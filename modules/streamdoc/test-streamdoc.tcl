@@ -9,9 +9,16 @@
 package require Tcl 9
 package require Tk
 
+# An error in an idle callback (a re-follow, a -create script) fails the run
+# instead of vanishing into a dialog.
+proc bgerror {msg} {
+    puts "FAIL: background error: $msg\n$::errorInfo"
+    incr ::fails
+}
+
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact streamdoc 1.2a1
+package require -exact streamdoc 1.2a2
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
@@ -193,9 +200,109 @@ $d batch {
 update
 check "the autofollow latch keeps the tail in view" 1 \
     [expr {[lindex [$T yview] 1] >= 0.999}]
-$T yview moveto 0
+$d scroll_to moveto 0
 update
 check "<<LeftBottom>> fires on scrolling away" away $::at
+
+# ---- the latch: only the reader lets go of it --------------------------------
+proc latched {} { return [set [info object namespace $::d]::Latched] }
+proc at_tail {} { return [expr {[lindex [$::T yview] 1] == 1.0}] }
+proc line {text} {
+    $::d batch {
+        set m [$::d append_open]
+        $::d emit $m $text {}
+        $::d append_close $m
+    }
+}
+check "scroll_to let go of the latch" 0 [latched]
+
+# A window that is realised small and reaches 300 px on an idle pass after
+# its batch grows the tail below the latched view, the way a lazily built
+# table does.
+proc late_window {} {
+    set f [frame $::T.late -height 1 -width 40]
+    after idle [list $f configure -height 300]
+    return $f
+}
+$d follow
+update
+check "follow takes the latch" 1 [latched]
+$d batch {
+    set m [$d append_open]
+    $d emit $m "before the late window\n" {}
+    $d emit_window $m -create late_window
+    $d emit $m "\n" {}
+    $d append_close $m
+}
+update
+check "the late window was realised at full height" 300 [winfo height $T.late]
+check "growth after the batch leaves the latch held" 1 [latched]
+check "growth after the batch is re-followed" 1 [at_tail]
+line "after the late window\n"
+update
+check "the next line streams into view at the tail" 1 [at_tail]
+
+event generate $T <MouseWheel> -delta -120
+check "a wheel event lets go of the latch" 0 [latched]
+$d follow
+update
+$d scroll_to moveto 0
+update
+check "scroll_to lets go of the latch" 0 [latched]
+check "scroll_to scrolls" 0.0 [lindex [$T yview] 0]
+line "unfollowed arrival\n"
+update
+check "a released view stays where the reader put it" 0.0 [lindex [$T yview] 0]
+
+# A shorter text keeps its top line, which leaves the tail below the view.
+$d follow
+update
+$T configure -height 5
+update
+check "a resize leaves the latch held" 1 [latched]
+check "a resize with the latch held re-follows" 1 [at_tail]
+$T configure -height 10
+update
+
+# A reveal to an earlier region is a jump away: the next line leaves it be.
+$d follow
+update
+$d reveal [at "First region"] top
+update
+set before [$T index @0,0]
+check "a reveal away from the tail lets go of the latch" 0 [latched]
+line "after the reveal\n"
+update
+check "a line after the reveal leaves the view where it put it" $before [$T index @0,0]
+$d follow
+update
+$d reveal "end - 2 chars"
+check "a reveal on the last line keeps the latch" 1 [latched]
+
+# Unfolding the last region from the tail keeps its header in view.
+$d batch {
+    set rl [$d region_open [dict create]]
+    set m [$d append_open]
+    $d emit $m "▾ last region\n" {}
+    for {set i 0} {$i < 20} {incr i} { $d emit $m "last body $i\n" {} }
+    $d append_close $m
+    $d region_close
+}
+$d fold $rl
+$d follow
+update
+$d unfold $rl
+update
+check "unfold lets go of the latch" 0 [latched]
+check "unfolding the last region keeps its header in view" 1 \
+    [expr {[$T bbox [at "last region"]] ne ""}]
+# The top line is the tall late window, part-scrolled off the edge; the
+# anchor keeps its pixel offset, so the header holds its place exactly.
+set y [lindex [$T bbox [at "last region"]] 1]
+line "after the unfold\n"
+update
+check "a line after the unfold leaves the header where it was" $y \
+    [lindex [$T bbox [at "last region"]] 1]
 
 # ---- reveal alignment ------------------------------------------------------
 # From below, `top` puts the target's line on the top edge; in the last

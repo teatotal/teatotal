@@ -32,7 +32,7 @@ Each region has exactly two elide layers, both owned by the base class (no host 
 - **fold** - the whole body and summary collapse to the header line. The layer covers whole logical lines and never the header's own newline, so folding everything leaves one header per line, a table of contents.
 - **detail** - lines the host tags with `detail_tag $n` as it emits, hidden by default behind the summary line. The detail layer outranks the fold layer, so unfolding a region does not spill its hidden detail, and re-folding re-hides whatever was revealed.
 
-The first character of a header line and of a summary line is a state glyph from the `-glyphs` pair, but the two track different state: the header glyph mirrors the region's fold state, the summary glyph mirrors its detail-shown state. The base class swaps each in place with a same-length replace, so downstream indices stay true. A header or summary line that does not start with a glyph is left alone.
+The first character of a header line and of a summary line is a state glyph from the `-glyphs` pair, but the two track different state: the header glyph mirrors the region's fold state, the summary glyph mirrors its detail-shown state. The host writes the header line's glyph as it emits the header; the base class writes the summary line whole, its glyph, then `summary_text`'s phrase, then the newline. The base class swaps each glyph in place with a same-length replace, so downstream indices stay true. A header or summary line that does not start with a glyph is left alone.
 
 ## PRIMITIVES
 
@@ -55,13 +55,16 @@ The first character of a header line and of a summary line is a state glyph from
 | `region_at idx` | the region containing an index, `-1` for chrome |
 | `detail_tag n` | the tag the host lays on region `n`'s detail lines as it emits |
 | `payload n` / `payload_set n payload` | the region's opaque host dict |
-| `region_count` / `live` / `folded n` / `shown n` | document and per-region state |
+| `region_count` / `folded n` / `shown n` | document and per-region state |
+| `live` | the open region's index, `-1` while none is open |
 | `region_info n` | a region's resolved state: `{start end summary open folded shown payload}` |
 | `reset` | empty the document: buffer, marks, elide tags, store |
 | `batch script` | run mutations with the widget editable and the view anchored once |
 | `follow` | jump to the tail and latch there |
+| `scroll_to args` | `yview args` on the text, as the reader: lets go of the tail latch; the scrollbar's command |
+| `textwidget` | the text widget, the handle for tag configuration, tag bindings, and painting at the door through a painter that takes a widget and an index (such as a markdown renderer) |
 
-Every mutating primitive ends in `check_invariant`; a host never touches the underlying text widget.
+Every mutating primitive ends in `check_invariant`. The host inserts only inside a door, at `[my door]`, and never moves marks or sets `-elide`.
 
 ## THE CONTENT DOOR AND REWIND
 
@@ -74,7 +77,7 @@ All content, chrome and region alike, goes through the door inside a `batch`, in
 The widget's defining behaviour: content arriving while the user reads never moves what they are reading.
 
 - A streamed mutation is bracketed by `batch`'s `anchor_save` / `anchor_restore`. A reader parked anywhere in the document keeps their line while regions land below.
-- With `-autofollow 1` and the reader at the tail, the view latches to the tail and follows streamed appends (the `tail -f` / chat contract); the latch releases the moment they scroll away.
+- With `-autofollow 1` and the reader at the tail, the view latches to the tail and follows streamed appends (the `tail -f` / chat contract). Only the reader lets go of the latch: wheel or touchpad scrolling and the `Prior`/`Next`/`Up`/`Down`/`Home`/`End` keys on the text, a scrollbar drag, `scroll_to` (so a host's programmatic scroll counts as the reader's), a fold or detail toggle (`fold`, `unfold`, `toggle`, `detail_show`, `detail_hide`, `detail_toggle`, `fold_all`, `expand_all`), and a `reveal` or find step whose target is not on the last line. Growth at the tail the reader did not ask for leaves the latch held and re-follows on idle: an append, an embedded window realised or grown after its batch, a resize of the text. A batch that finds the view on the tail takes the latch.
 - `follow` jumps to the tail and re-latches.
 - `<<AtBottom>>` and `<<LeftBottom>>` fire on the host frame when the view reaches or leaves the last line, so a host can show a "jump to latest" affordance the way chat clients do.
 
@@ -95,7 +98,7 @@ The widget's defining behaviour: content arriving while the user reads never mov
 ## HOOKS
 
 - `summary_text payload` - the summary phrase for a region's payload; the empty string takes no summary line. Default: always empty.
-- `region_tags payload` - the tags laid on the summary line the base class writes, so the host can style and bind it. Default: `summary`.
+- `region_tags payload` - the tags laid on the summary line the base class writes, so the host can style and bind it. Default: `summary`, which is also `find_chrome_tags`' default, so find skips summary lines unless the host changes either.
 - `on_region_rendered n` - runs when a region closes; wire bindings or indices here. Default: nothing.
 - `on_reveal idx` - the first thing `reveal` does, before any unfold, idle drain or scroll, so a window the scroll realises is born in the state the host set. Default: nothing.
 - `place_find frame` - puts the find bar on screen; `find_hide` unplaces it through whichever geometry manager this chose. Default: the grid row below the text and scrollbar.
