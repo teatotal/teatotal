@@ -1,6 +1,6 @@
 package require Tcl 9
 package require Tk
-package provide streamdoc 1.3a2
+package provide streamdoc 1.3a3
 
 namespace eval ::streamdoc {}
 
@@ -332,7 +332,12 @@ oo::class create ::streamdoc::StreamDoc {
     }
 
     # A host may keep the widgets past the instance; nothing streamdoc bound
-    # on them may call it after.
+    # on them may call it after. Its bindtags are emptied, the find bar it
+    # built goes, its commands on the text and scrollbar are cleared, and
+    # each embedded window loses its watch: the <Configure> script
+    # window_watch appended, and the window_realise wrapper round a -create
+    # script, which gives way to the host's script inside it. A built window
+    # keeps its -create too; Tk runs it again if the window is destroyed.
     destructor {
         if {[info exists FollowAfter] && $FollowAfter ne ""} {
             after cancel $FollowAfter
@@ -342,9 +347,27 @@ oo::class create ::streamdoc::StreamDoc {
             set tag streamdoc[set $v]
             foreach ev [bind $tag] { bind $tag $ev {} }
         }
-        if {[info exists Text] && [winfo exists $Text]
-                && [$Text cget -yscrollcommand] eq [list [self] on_yscroll]} {
+        if {[info exists Find] && [winfo exists $Find]} { destroy $Find }
+        if {[info exists Top] && [winfo exists $Top.sb]
+                && [$Top.sb cget -command] eq [list [self] scroll_to]} {
+            $Top.sb configure -command {}
+        }
+        if {![info exists Text] || ![winfo exists $Text]} return
+        if {[$Text cget -yscrollcommand] eq [list [self] on_yscroll]} {
             $Text configure -yscrollcommand {}
+        }
+        foreach {- w i} [$Text dump -window 1.0 end] {
+            if {$w ne "" && [winfo exists $w]} {
+                set watch [list [self] window_grew $w]
+                set lines [split [bind $w <Configure>] \n]
+                bind $w <Configure> [join [lsearch -all -inline -exact \
+                    -not $lines $watch] \n]
+            }
+            set c [$Text window cget $i -create]
+            if {[string is list $c] && [llength $c] == 3
+                    && [lrange $c 0 1] eq [list [self] window_realise]} {
+                $Text window configure $i -create [lindex $c 2]
+            }
         }
     }
 

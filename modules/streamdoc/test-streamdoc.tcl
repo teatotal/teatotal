@@ -19,7 +19,7 @@ proc bgerror {msg} {
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact streamdoc 1.3a2
+package require -exact streamdoc 1.3a3
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
@@ -627,11 +627,50 @@ toplevel .t3
 pack [ttk::frame .t3.f] -fill both -expand 1
 set k [Feed new]
 $k setup .t3.f
+set T3 .t3.f.text
+$T3 configure -height 5
+# A built window carrying a host <Configure> of its own, and below the fold
+# two windows still to build: one from a host -create script, one from none.
+set ::hostconf 0
+$k batch {
+    set m [$k append_open]
+    $k emit_window $m -window [frame $T3.w -width 20 -height 20]
+    bind $T3.w <Configure> {+incr ::hostconf}
+    for {set i 0} {$i < 60} {incr i} { $k emit $m "line $i\n" {} }
+    $k emit_window $m -create {label .t3.f.text.c -text created}
+    $k emit_window $m -create {}
+    $k emit $m "\nend\n" {}
+    $k append_close $m
+}
+$k find_show
 update
+set unbuilt [lmap {- w i} [$T3 dump -window 1.0 end] {
+    if {$w ne ""} continue
+    set i
+}]
 $k destroy
 check "destroy empties streamdoc's tag on the kept text" {} [bind streamdoc.t3.f.text]
 check "destroy empties streamdoc's tag on the kept frame" {} [bind streamdoc.t3.f]
+check "destroy takes the find bar it built" 0 [winfo exists .t3.f.find]
+check "destroy clears the scrollbar's command" {} [.t3.f.sb cget -command]
+check "destroy keeps the host's <Configure> on a built window" \
+    {incr ::hostconf} [string trim [bind $T3.w <Configure>]]
+check "destroy hands each unbuilt window the host's -create script" \
+    [list {label .t3.f.text.c -text created} {}] \
+    [lmap i $unbuilt { $T3 window cget $i -create }]
 set f0 $fails
+# The scrollbar as its class bindings drive it.
+check "the kept scrollbar scrolls without the instance" "" [catch {
+    ttk::scrollbar::Moveto .t3.f.sb 0.3
+    ttk::scrollbar::Scroll .t3.f.sb 1 pages
+} e; set e]
+$T3.w configure -height 40
+update
+check "a built window's <Configure> still runs the host's script" 1 \
+    [expr {$::hostconf > 0}]
+$T3 yview moveto 1
+update
+check "the host's -create script still builds its window" 1 [winfo exists $T3.c]
 foreach ev {<Escape> <Prior> <MouseWheel> <Control-f>} {
     focus -force .t3.f.text; update
     event generate .t3.f.text $ev
