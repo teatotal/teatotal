@@ -299,6 +299,20 @@ check "and is narrower than the pane" \
 destroy .nat
 update
 
+# A column whose cells are all empty, header included.
+set E [pane emp]
+::tkdown::tags $E $FA
+::tkdown::body $E end "| a |  | c |\n| --- | --- | --- |\n| x |  | z |" base code
+update; update
+set emp [lmap m [minsizes $E.tbl1] { expr {$m - 10} }]
+# The allocator gives it nothing; the cell's own one-character request
+# is what the grid spends.
+check "the allocator gives the empty column no width" [lindex $emp 1] 0
+check "the grid column is still one character wide" \
+    [lindex [grid bbox $E.tbl1 1 0] 2] [expr {[font measure fa-body 0] + 10}]
+destroy .emp
+update
+
 # ---- 8. table_scan and table_spotlight --------------------------------------
 check "table_scan finds a word only a cell holds" \
     [::tkdown::table_scan $G zanzibar 1] \

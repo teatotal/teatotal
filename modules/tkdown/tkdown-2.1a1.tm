@@ -2,7 +2,7 @@ package require Tcl 9
 package provide tkdown 2.1a1
 
 namespace eval ::tkdown {
-    namespace export parse_inline segment_code_fences segment_blockquotes \
+    namespace export parse_inline resolve_refs segment_code_fences segment_blockquotes \
         segment_headings segment_rules segment_images segment_tables \
         segment_lists table_to_markdown table_colwidths ensure_fonts tags \
         runs prose body emit_prose emit_code emit_quote emit_table \
@@ -22,7 +22,7 @@ namespace eval ::tkdown {
     variable cursors
     # table_colwidths' search state, keyed by a per-call id; see colwidths_memo.
     variable colmemo
-    # Numbers body's per-block marks.
+    # Numbers the per-block marks block sets.
     variable blockseq 0
 }
 
@@ -36,12 +36,12 @@ namespace eval ::tkdown {
 # thematic breaks, image lines, nested lists, links, code spans, and
 # asterisk emphasis - and leaves the rest as literal text.
 #
-# The parse half (the segment_* splitters and parse_inline) is pure Tcl,
-# needs no Tk, and runs under a bare tclsh. The splitters are layered: each
-# sees a body the ones above it have already peeled, in the order body
-# walks them. The prose emitter splits lists and lifts headings itself;
-# segment_headings is for a host that wants a document's headings as
-# segments of its own. The emit half paints onto a widget registered with
+# The parse half (the segment_* splitters, resolve_refs and parse_inline)
+# is pure Tcl, needs no Tk, and runs under a bare tclsh. The splitters are
+# layered: each sees a body the ones above it have already peeled, in the
+# order body walks them. The prose emitter splits lists and lifts headings
+# itself; segment_headings is for a host that wants a document's headings
+# as segments of its own. The emit half paints onto a widget registered with
 # `tags`, and every td-* tag it configures is font-only or geometry-only.
 # Colour always comes from the base tags the host stacks underneath or from
 # td-* tags the host inks, so the module owns faces and layout and the host
@@ -73,6 +73,111 @@ proc ::tkdown::segment_code_fences {body} {
         lappend segs [list [expr {$incode ? "code" : "prose"}] [join $buf "\n"]]
     }
     return $segs
+}
+
+# Rewrite a document's reference links as inline links: every definition
+# line `[label]: url "title"` is removed and every use of a defined label,
+# `[text][label]`, `[label][]` or a bare `[label]`, becomes `[text](url)`
+# (`![alt](url)` for an image). Labels match without case or runs of
+# whitespace. A `[^note]` label is a footnote and is left, definition and use.
+# Fenced lines and backtick spans are untouched, and a use whose label has no
+# definition stays literal. Definitions reach the whole document, so a host
+# that segments runs this over the text first; body does not.
+# Rewrite a document's reference links as inline ones: every `[label]: url`
+# definition line is removed and each `[text][label]`, `[label][]` or bare
+# `[label]` becomes `[text](url)`. Definitions are document-scoped and
+# usually sit at the end, so the host runs this over the whole document
+# before any splitting; body does not, since a host painting one section
+# at a time would hand it a text without its definitions. A label starting
+# with `^` is a footnote and is left alone, definition and reference both.
+proc ::tkdown::resolve_refs {text} {
+    set defs [dict create]
+    set kept [list]
+    set infence 0
+    foreach line [split $text "\n"] {
+        if {[::tkdown::fence_line $line]} {
+            set infence [expr {!$infence}]
+        } elseif {!$infence && [regexp {^ {0,3}\[([^\]]+)\]:[ \t]*(<[^>]*>|[^\s<]\S*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$} \
+                $line -> label url]
+                && [string index $label 0] ne "^"} {
+            set url [string trim $url "<>"]
+            set key [::tkdown::ref_key $label]
+            if {$url ne "" && ![dict exists $defs $key]} { dict set defs $key $url }
+            continue
+        }
+        lappend kept $line
+    }
+    if {[dict size $defs] == 0} { return [join $kept "\n"] }
+    set out [list]
+    set infence 0
+    foreach line $kept {
+        if {[::tkdown::fence_line $line]} {
+            set infence [expr {!$infence}]
+        } elseif {!$infence} {
+            set line [::tkdown::ref_line $line $defs]
+        }
+        lappend out $line
+    }
+    return [join $out "\n"]
+}
+
+# A label's lookup key: case folded, runs of whitespace one space.
+proc ::tkdown::ref_key {label} {
+    return [string tolower [regsub -all {\s+} [string trim $label] " "]]
+}
+
+# Rewrite the references on one line against defs, passing over backtick
+# spans and backslash escapes.
+proc ::tkdown::ref_line {line defs} {
+    set br {\[((?:[^\[\]\\]|\\.)*)\]}
+    set out ""
+    set i 0
+    set n [string length $line]
+    while {$i < $n} {
+        set ch [string index $line $i]
+        if {$ch eq "\\"} {
+            append out [string range $line $i [expr {$i + 1}]]
+            incr i 2
+            continue
+        }
+        if {$ch eq "`"} {
+            regexp {^`+} [string range $line $i end] run
+            set close [string first $run $line [expr {$i + [string length $run]}]]
+            set end [expr {$close < 0 ? $i + [string length $run]
+                                      : $close + [string length $run]}]
+            append out [string range $line $i [expr {$end - 1}]]
+            set i $end
+            continue
+        }
+        set img [expr {$ch eq "!" && [string index $line $i+1] eq "\["}]
+        if {$img || $ch eq "\["} {
+            set b [expr {$img ? $i + 1 : $i}]
+            if {[regexp "^$br" [string range $line $b end] m text]
+                    && [string index $text 0] ne "^"} {
+                set next [expr {$b + [string length $m]}]
+                set label ""
+                set end $next
+                if {[regexp "^$br" [string range $line $next end] m2 l2]} {
+                    set label [expr {$l2 eq "" ? $text : $l2}]
+                    set end [expr {$next + [string length $m2]}]
+                } elseif {[string index $line $next] ne "("} {
+                    set label $text
+                }
+                set key [::tkdown::ref_key $label]
+                if {$label ne "" && [string index $label 0] ne "^"
+                        && [dict exists $defs $key]} {
+                    set url [dict get $defs $key]
+                    if {[regexp {\s} $url]} { set url <$url> }
+                    append out [expr {$img ? "!" : ""}] "\[$text\]($url)"
+                    set i $end
+                    continue
+                }
+            }
+        }
+        append out $ch
+        incr i
+    }
+    return $out
 }
 
 # Split a body into ordered {kind text} segments, where kind is
@@ -553,9 +658,8 @@ proc ::tkdown::colwidths_cost {memo widths} {
     return [tcl::mathop::+ 0 {*}$tallest]
 }
 
-# The starting allocations: CSS auto layout (the excess over the floors
-# shared in proportion to each column's max-content less its floor), the
-# max-contents scaled to avail, and a greedy climb from the floors.
+# Three starting points because the search is local: a single seed can sit
+# in a basin the others escape.
 proc ::tkdown::colwidths_seeds {memo mins maxs avail} {
     set summin [tcl::mathop::+ {*}$mins]
     set summax [tcl::mathop::+ {*}$maxs]
@@ -981,7 +1085,8 @@ proc ::tkdown::inline_links {s} {
                 set i $next
                 continue
             }
-        } elseif {$ch eq "<" && [regexp {^<(https?://[^\s<>]+)>} $rest m url]} {
+        } elseif {$ch eq "<"
+                && [regexp {^<([A-Za-z][A-Za-z0-9+.-]*:[^\s<>]+)>} $rest m url]} {
             lappend links [list $url $url]
             append out \uE003
             incr i [string length $m]
@@ -1615,8 +1720,8 @@ proc ::tkdown::own_cursor {w} {
     return [$w cget -cursor]
 }
 
-# The default prose emitter: one prose run split into peer blocks that
-# re-join on the newlines the splits consumed. A list run paints through
+# The default prose emitter: one prose run split into list runs, heading
+# lines and plain text, joined again on the newlines the splits consumed. A list run paints through
 # emit_list; a heading line, ATX (atx_line) or a line over its setext
 # underline (setext_level), lifts out under td-h1/h2/h3 (levels 4-6 render
 # as h3); the rest is plain text, inline spans parsed inside each. A run

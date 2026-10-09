@@ -95,6 +95,15 @@ check inline_bare_url_bold \
 check inline_autolink \
     {{plain {at }} {link https://x.org https://x.org}} \
     [pi {at <https://x.org>}]
+# An angle-bracket autolink takes any scheme; a tag is not one.
+check inline_autolink_mailto \
+    {{plain {write }} {link mailto:a@b.org mailto:a@b.org}} \
+    [pi {write <mailto:a@b.org>}]
+check inline_autolink_tel \
+    {{link tel:+61-2-5550100 tel:+61-2-5550100}} \
+    [pi {<tel:+61-2-5550100>}]
+check inline_autolink_div   {{plain <div>}} [pi {<div>}]
+check inline_autolink_a     {{plain {<a href="x">}}} [pi {<a href="x">}]
 check inline_url_midword \
     {{plain xhttps://x.org}} \
     [pi {xhttps://x.org}]
@@ -459,6 +468,8 @@ set case1 {
 }
 set w [cw $case1 100]
 check cw_case1_sum 100 [tcl::mathop::+ {*}$w]
+# 15 lines is the viewer's stated requirement: a 100-character pane shows
+# this table no taller than that.
 check cw_case1_height 1 [expr {[ref_cost $case1 $w 1 0] <= 15}]
 check cw_case1_contract {} [colwidths_faults $case1 100 1 1 $w]
 set case1_height [ref_cost $case1 $w 1 0]
@@ -534,6 +545,40 @@ puts "corpus: $ntab tables in $ms ms"
 foreach x [lrange $faulted 0 4] { puts "  $x" }
 check cw_corpus_faults 0 [llength $faulted]
 check cw_corpus_under_10s 1 [expr {$ms < 10000}]
+
+# ---- resolve_refs: reference links become inline links ---------------------
+proc rr {s} { return [::tkdown::resolve_refs $s] }
+check ref_full        "see \[the site\](http://x.org)\n" \
+    [rr "see \[the site\]\[x\]\n\n\[x\]: http://x.org"]
+check ref_collapsed   "see \[x\](http://x.org)" \
+    [rr "see \[x\]\[\]\n\[x\]: http://x.org"]
+check ref_shortcut    "see \[x\](http://x.org) now" \
+    [rr "see \[x\] now\n\[x\]: http://x.org"]
+check ref_def_at_end  "\[up top\](http://x.org)\nbody\n" \
+    [rr "\[up top\]\[x\]\nbody\n\[x\]: http://x.org\n"]
+check ref_case_ws     "\[a\](http://x.org) \[b\](http://x.org)" \
+    [rr "\[a\]\[FOO  Bar\] \[b\]\[foo bar\]\n   \[Foo Bar\]: http://x.org"]
+check ref_angle_title "\[a\](<http://x.org/a b>)" \
+    [rr "\[a\]\[x\]\n\[x\]: <http://x.org/a b> \"A title\""]
+check ref_title_forms "\[a\](u1) \[b\](u2)" \
+    [rr "\[a\]\[x\] \[b\]\[y\]\n\[x\]: u1 'one'\n\[y\]: u2 (two)"]
+check ref_image       "!\[alt\](http://x.org/i.png)" \
+    [rr "!\[alt\]\[img\]\n\[img\]: http://x.org/i.png"]
+check ref_footnote    "a\[^1\] here\n\[^1\]: the note" \
+    [rr "a\[^1\] here\n\[^1\]: the note"]
+check ref_in_fence    "```\n\[a\]\[x\] \[x\]\n```\n\[a\](u)" \
+    [rr "```\n\[a\]\[x\] \[x\]\n```\n\[a\]\[x\]\n\[x\]: u"]
+check ref_def_in_fence "```\n\[x\]: u\n```\n\[x\]" \
+    [rr "```\n\[x\]: u\n```\n\[x\]"]
+check ref_in_backticks "`\[a\]\[x\]` and \[a\](u)" \
+    [rr "`\[a\]\[x\]` and \[a\]\[x\]\n\[x\]: u"]
+check ref_shortcut_undefined "\[x\] and \[y\]" \
+    [rr "\[x\] and \[y\]\n\[z\]: u"]
+check ref_inline_kept "\[x\](other) and \[x\](u)" \
+    [rr "\[x\](other) and \[x\]\n\[x\]: u"]
+check ref_full_undefined "\[a\]\[nope\] \[b\](u)" \
+    [rr "\[a\]\[nope\] \[b\]\[x\]\n\[x\]: u"]
+check ref_not_a_def_indented "    \[x\]: u" [rr "    \[x\]: u"]
 
 if {$fails > 0} {
     puts "$fails failures"
