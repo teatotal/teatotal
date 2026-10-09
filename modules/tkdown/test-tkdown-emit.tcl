@@ -19,7 +19,7 @@ package require Tk
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require tkdown 2.0
+package require -exact tkdown 2.1a1
 
 set fails 0
 proc check {name got want} {
@@ -208,7 +208,9 @@ proc minsizes {f} {
         grid columnconfigure $f $j -minsize
     }
 }
-proc tblmarks {w} { lsort [lsearch -all -inline -glob [$w mark names] tbl#m*] }
+# The window indices of w's tables, in document order, and a table's payload.
+proc tblidx {w} { lmap t [::tkdown::table_list $w] { lindex $t 0 } }
+proc payload {w idx} { lindex [::tkdown::table_spec $w $idx] 1 }
 
 set LONG [string repeat "word after word wraps " 14]
 set WIDE "intro
@@ -220,19 +222,24 @@ set WIDE "intro
 
 ::tkdown::body $G end $WIDE base code
 check "a table makes one window" [llength [$G dump -window 1.0 end]] 3
-check "and one mark" [tblmarks $G] tbl#m1
+set T1 [lindex [$G dump -window 1.0 end] 2]
+check "table_list knows it by its window's index" [tblidx $G] $T1
+check "its -create script carries id, payload and base tags" \
+    [lrange [::tkdown::table_spec $G $T1] 0 0] 1
+check "the payload is the parsed table" [dict get [payload $G $T1] align] {left center}
 check "the window character carries td-tblwin, td-margin and the base tags" \
-    [lsort [$G tag names tbl#m1]] {base td-margin td-tblwin}
-check "the mark sits on the window character" \
-    [lindex [$G dump -window tbl#m1] 0] window
+    [lsort [$G tag names $T1]] {base td-margin td-tblwin}
 check "the prose above ends its line before the table" \
-    [$G get 1.0 tbl#m1] "intro\n"
-check "the window ends its line" [$G get tbl#m1+1c] "\n"
+    [$G get 1.0 $T1] "intro\n"
+check "the window ends its line" [$G get $T1+1c] "\n"
 check "nothing is built before the text shows it" [winfo exists $G.tbl1] 0
+check "table_spec knows no plain character" [::tkdown::table_spec $G 1.0] ""
 update; update
 set f $G.tbl1
 check "update realises the frame" [winfo exists $f] 1
-check "the window is the frame" [lindex [$G dump -window tbl#m1] 1] $f
+check "the window is the frame" [lindex [$G dump -window $T1] 1] $f
+check "table_spec reads a built grid by its path too" \
+    [lindex [::tkdown::table_spec $G $f] 0] 1
 check "a cell holds its text with the inline markers dropped" \
     [$f.c1x0 get 1.0 end-1c] alpha
 check "a styled cell reads as the reader sees it" [$f.c3x1 get 1.0 end-1c] \
@@ -249,7 +256,7 @@ check "cell background is the pane's" [$f.c1x0 cget -background] [$G cget -backg
 # The fit: table_colwidths over the measured words, pinned as minsizes.
 set rows [list]
 set hdr 1
-foreach row [dict get [dict get [reg $G] tables] 1 payload rows] {
+foreach row [dict get [payload $G $T1] rows] {
     lappend rows [lmap c $row { ::tkdown::cell_tokens $FA $c $hdr }]
     set hdr 0
 }
@@ -279,7 +286,7 @@ set natwant [list]
 foreach j {0 1 2} {
     set mx 0
     set hdr 1
-    foreach row [dict get [dict get [reg $N] tables] 1 payload rows] {
+    foreach row [dict get [payload $N $N.tbl1] rows] {
         set px [tcl::mathop::+ 0 {*}[::tkdown::cell_tokens $FA [lindex $row $j] $hdr]]
         if {$px > $mx} { set mx $px }
         set hdr 0
@@ -295,7 +302,7 @@ update
 # ---- 8. table_scan and table_spotlight --------------------------------------
 check "table_scan finds a word only a cell holds" \
     [::tkdown::table_scan $G zanzibar 1] \
-    [list [list tbl#m1 "the zanzibar token sits only in this styled cell"]]
+    [list [list $T1 "the zanzibar token sits only in this styled cell"]]
 check "table_scan honours case when asked" [::tkdown::table_scan $G ZANZIBAR 0] {}
 check "table_scan folds case when asked" \
     [llength [::tkdown::table_scan $G ZANZIBAR 1]] 1
@@ -304,13 +311,20 @@ check "an empty needle finds nothing" [::tkdown::table_scan $G "" 1] {}
 # A second table painted above the first: the hits come in document order.
 $G mark set top 1.0
 ::tkdown::body $G top $TBL base code
+lassign [tblidx $G] T2 T1
 check "a later-numbered table above comes first" \
-    [::tkdown::table_scan $G e 1] [list {tbl#m2 Name} {tbl#m1 Key}]
+    [::tkdown::table_scan $G e 1] [list [list $T2 Name] [list $T1 Key]]
+check "the first table's index moved down with the insert" \
+    [lindex [$G dump -window $T1] 1] $f
 
-::tkdown::table_spotlight $G tbl#m1
+::tkdown::table_spotlight $G $T1
 check "the spotlight paints td-spot's colour" [$f cget -background] #ffee00
-::tkdown::table_spotlight $G tbl#m2
+check "and holds the lit table's id" [dict get [reg $G] spot] 1
+::tkdown::table_spotlight $G $T2
 check "lighting another puts the first out" [$f cget -background] #aaaaaa
+::tkdown::table_spotlight $G end-1c
+check "an index holding no table puts the light out" [dict get [reg $G] spot] ""
+::tkdown::table_spotlight $G $T2
 ::tkdown::table_spotlight $G ""
 check "an empty index puts the light out" [dict get [reg $G] spot] ""
 update
@@ -332,7 +346,7 @@ event generate $f.c1x0 <Enter>
 check "entering the table shows its copy button" [winfo manager $f.copy] place
 $f.copy invoke
 check "the button copies the table as GFM" [clipboard get] \
-    [::tkdown::table_to_markdown [dict get [dict get [reg $G] tables] 1 payload]]
+    [::tkdown::table_to_markdown [payload $G $f]]
 check "and acknowledges with a tick" [$f.copy cget -text] "✓"
 after 800 {set ::waited 1}
 vwait ::waited
@@ -343,11 +357,11 @@ update
 check "leaving the table hides its copy button" [winfo manager $f.copy] ""
 
 # ---- 10. refit: margins and option changes ----------------------------------
-set x0 [lindex [$G bbox tbl#m1] 0]
+set x0 [lindex [$G bbox $f] 0]
 ::tkdown::refit $G -margin 20
 check "refit moves the window's margin" [$G tag cget td-tblwin -lmargin1] 20
 update; update
-check "the window moved with it" [expr {[lindex [$G bbox tbl#m1] 0] - $x0}] 20
+check "the window moved with it" [expr {[lindex [$G bbox $f] 0] - $x0}] 20
 set avail20 [expr {[inner $G] - 40 - 2 * 10}]
 set want20 [::tkdown::table_colwidths $rows $avail20 \
     [font measure fa-body 0] [font measure fa-body " "]]
@@ -382,7 +396,7 @@ set S [text .s.f.t]
 ::tkdown::tags $S $FA -copystyle NoSuchStyle
 $S tag configure td-spot -background #00ff00
 ::tkdown::body $S end $TBL base code
-::tkdown::table_spotlight $S tbl#m1
+::tkdown::table_spotlight $S [tblidx $S]
 pack $S -fill both -expand 1
 update; update
 check "an unknown -copystyle still realises" [winfo exists $S.tbl1] 1
@@ -398,44 +412,55 @@ update
 check "destroying the pane unregisters it" \
     [dict exists [set ::tkdown::widgets] $S] 0
 
-# ---- 11. forget, and a delete without it ------------------------------------
+# ---- 11. deleting the text, forget ------------------------------------------
+::tkdown::table_spotlight $G $T1
 ::tkdown::forget $G
-check "forget leaves w no children" [winfo children $G] {}
-check "forget unsets every table mark" [tblmarks $G] {}
-check "forget empties the registry's tables" [dict get [reg $G] tables] {}
+check "forget leaves the grids in the text" [winfo exists $f] 1
+check "forget puts the spotlight out" \
+    [list [dict get [reg $G] spot] [$f cget -background]] {{} #aaaaaa}
 $G delete 1.0 end
+check "a delete takes the built grids with their windows" [winfo children $G] {}
 ::tkdown::body $G end "$TBL\n\ntext\n\n$TBL" base code
 update; update
 set n1 [llength [winfo children $G]]
-::tkdown::forget $G
 $G delete 1.0 end
 ::tkdown::body $G end "$TBL\n\ntext\n\n$TBL" base code
 update; update
-check "a second render after forget makes no more children" \
+check "a second render makes no more children" \
     [llength [winfo children $G]] $n1
-check "table ids carry on after forget" [tblmarks $G] {tbl#m5 tbl#m6}
-::tkdown::forget $G
-check "and forget clears them again" [winfo children $G] {}
+check "table ids carry on, never reused" \
+    [lmap t [::tkdown::table_list $G] { lindex $t 1 }] {5 6}
+
+# A delete above a table: the index table_scan gives is the window's still.
+$G delete 1.0 end
+::tkdown::body $G end "one\ntwo\nthree\n\n$TBL" base code
+set at [lindex [::tkdown::table_scan $G apple 1] 0 0]
+check "table_scan gives the window character's index" \
+    [lindex [$G dump -window $at] 0] window
+$G delete 1.0 3.0
+set moved [lindex [::tkdown::table_scan $G apple 1] 0 0]
+check "table_scan's index follows a delete above the table" \
+    $moved [$G index "$at -2 lines"]
+check "and is still the window's" [lindex [$G dump -window $moved] 0] window
 
 # Delete without forget: one table built, one far below never shown.
 $G delete 1.0 end
 ::tkdown::body $G end "$TBL\n\n[string repeat "filler\n" 200]\n$TBL" base code
 update; update
 check "only the visible table is built" \
-    [list [winfo exists $G.tbl7] [winfo exists $G.tbl8]] {1 0}
+    [list [winfo exists $G.tbl8] [winfo exists $G.tbl9]] {1 0}
+check "both tables are in the text" [llength [::tkdown::table_scan $G apple 1]] 2
 $G delete 1.0 end
 update
-check "the built table's <Destroy> unset its mark" [tblmarks $G] tbl#m8
-check "table_scan finds nothing once the text is gone" \
+check "after delete 1.0 end, table_scan finds nothing" \
     [::tkdown::table_scan $G apple 1] {}
-check "and the registry is empty" [dict get [reg $G] tables] {}
-check "the built frame went with its window" [winfo exists $G.tbl7] 0
-check "the prune unset the unbuilt table's mark" [tblmarks $G] {}
-::tkdown::body $G end $TBL base code
-$G delete 1.0 end
+check "and the text holds no window" [$G window names] {}
+check "the built frame went with its window" [winfo exists $G.tbl8] 0
+check "forget after the delete is harmless" [catch {::tkdown::forget $G}] 0
+check "and leaves nothing to find" [::tkdown::table_scan $G apple 1] {}
 ::tkdown::refit $G
-check "refit's prune unsets a mark too" [tblmarks $G] {}
-::tkdown::forget $G
+update
+check "a refit over the empty pane is harmless too" [winfo children $G] {}
 
 # A pane destroyed while it holds a built grid unregisters cleanly.
 ::tkdown::body $G end $TBL base code
@@ -498,13 +523,13 @@ check "an insert at a quote's start lands on the quote's first line" \
 text .lt
 ::tkdown::tags .lt $FA
 ::tkdown::body .lt end "- a\n- b\n| x | y |\n|---|---|\n| 1 | 2 |" base code
-set m [tblmarks .lt]
+set m [tblidx .lt]
 check "a list ends its line before a table" \
     [.lt get "$m -1c linestart" $m] "•\tb\n"
 # The grid's own guard: a table emitted mid-line opens a line first.
 .lt insert end "tail" base
 ::tkdown::emit_table .lt end [dict create align left rows {{h} {v}}] base
-set m [lindex [tblmarks .lt] end]
+set m [lindex [tblidx .lt] end]
 check "a table met mid-line starts its own line" [.lt get "$m -1c"] "\n"
 ::tkdown::forget .lt
 
@@ -713,6 +738,90 @@ text .ob
 check "a quote, blank line, rule reports quote and rule" \
     [lmap b $::blocks { lindex $b 0 }] {quote rule}
 check "the blank line is still painted" [.ob get 1.0 end-1c] "▏ q\n\n \n\n"
+
+# ---- 21. links in cells, and -link_cmd ----------------------------------------
+set ::opened {}
+proc opened {url} { lappend ::opened $url }
+# A press, an optional drag to (dx,dy), and a release, on text widget t at
+# the character idx, the pointer first moved there so the text sees the tag.
+proc click {t idx {dx 0} {dy 0}} {
+    lassign [$t bbox $idx] x y bw bh
+    set x [expr {$x + $bw / 2}]
+    set y [expr {$y + $bh / 2}]
+    event generate $t <Motion> -x $x -y $y
+    event generate $t <ButtonPress-1> -x $x -y $y
+    if {$dx || $dy} {
+        event generate $t <B1-Motion> -x [expr {$x + $dx}] -y [expr {$y + $dy}]
+    }
+    event generate $t <ButtonRelease-1> -x [expr {$x + $dx}] -y [expr {$y + $dy}]
+    update
+}
+set L [pane lnk]
+::tkdown::tags $L $FA -link_cmd opened
+$L tag configure td-link -foreground #0000ff -underline 1
+::tkdown::body $L end "see \[docs\](https://x.org/D) here and more text\n\n| \[Head\](https://h.org/k) | b |\n| --- | --- |\n| \[site\](https://cell.org/x) | plain |" base code
+update; update
+set d [lindex [$L tag ranges td-link] 0]
+click $L "$d +1c"
+check "a click on a link calls -link_cmd with its url, once" $::opened https://x.org/D
+set ::opened {}
+click $L "$d +1c" 200 40
+check "a press on a link dragged off and released elsewhere opens nothing" $::opened {}
+check "the drag made a selection" [expr {[$L tag ranges sel] ne ""}] 1
+$L tag remove sel 1.0 end
+click $L "$d +1c" 6 0
+check "a drag of more than 4 px along the link opens nothing" $::opened {}
+click $L 1.0
+check "a click off a link opens nothing" $::opened {}
+event generate $L <Motion> -x 0 -y 0
+lassign [$L bbox "$d +1c"] x y
+event generate $L <Motion> -x [expr {$x + 2}] -y [expr {$y + 2}]
+update
+check "the pointer over a link shows the hand" [$L cget -cursor] hand2
+event generate $L <Motion> -x [lindex [$L bbox 1.0] 0] -y [lindex [$L bbox 1.0] 1]
+update
+check "and leaving it gives the widget its own cursor back" [$L cget -cursor] xterm
+
+set tf $L.tbl1
+$L see [tblidx $L]
+update; update
+check "the grid is built" [winfo exists $tf] 1
+set hc $tf.c0x0
+set bc $tf.c1x0
+check "a cell link paints its text" [$bc get 1.0 end-1c] site
+check "under the cell's link tags" [lsort [$bc tag names 1.0]] {lk lnk1}
+check "a cell link takes td-link's ink" \
+    [list [$bc tag cget lk -foreground] [$bc tag cget lk -underline]] [list #0000ff 1]
+check "a header-row cell link stays bold" \
+    [expr {"hb" in [$hc tag names 1.0] && "lk" in [$hc tag names 1.0]
+        && [lsearch [$hc tag names 1.0] hb] > [lsearch [$hc tag names 1.0] lk]}] 1
+click $bc 1.1
+check "a click on a cell link calls -link_cmd with its url" $::opened https://cell.org/x
+set ::opened {}
+click $bc 1.1 0 60
+check "a cell press dragged off opens nothing" $::opened {}
+$L tag configure td-link -foreground #00aa00
+::tkdown::refit $L
+update
+check "refit re-inks a cell link from td-link" [$bc tag cget lk -foreground] #00aa00
+check "link_scan finds a cell link by its url, at the table's window" \
+    [::tkdown::link_scan $L cell.org 1] [list [list [tblidx $L] https://cell.org/x]]
+check "link_scan merges the body's and the cells' links in document order" \
+    [lmap h [::tkdown::link_scan $L .org/ 1] { lindex $h 1 }] \
+    {https://x.org/D https://h.org/k https://cell.org/x}
+check "a cell link's shown text is not link_scan's" [::tkdown::link_scan $L site 1] {}
+
+::tkdown::refit $L -link_cmd {}
+check "without -link_cmd tkdown takes its bindings off td-link" \
+    [lmap ev {<ButtonPress-1> <ButtonRelease-1> <Enter> <Leave>} { $L tag bind td-link $ev }] \
+    {{} {} {} {}}
+click $bc 1.1
+check "and a cell link has ink but no click" $::opened {}
+$L tag bind td-link <ButtonRelease-1> {lappend ::opened host}
+::tkdown::refit $L
+check "a host's own td-link binding survives a refit without -link_cmd" \
+    [$L tag bind td-link <ButtonRelease-1>] {lappend ::opened host}
+destroy .lnk
 
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails

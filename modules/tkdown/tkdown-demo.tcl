@@ -17,7 +17,7 @@ package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
 foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
-package require tkdown 2.0
+package require -exact tkdown 2.1a1
 
 # The host owns the fonts: tkdown binds its faces onto names the host has
 # already created and sized, which is what lets one spinbox re-size the lot.
@@ -77,6 +77,7 @@ A setext heading
 | heading | `#` through `######` | clamped to **h3** |
 | table | pipes | a grid of wrapping cells |
 | list | `-` or `1.` | one row per item |
+| link | `[text](url)` | clickable in a cell [too](https://wiki.tcl-lang.org/page/text) |
 
 A table wider than the pane keeps its columns and wraps its longest cells, each column given the width that costs the fewest wrapped lines:
 
@@ -132,12 +133,10 @@ pack .body.t -side left -fill both -expand 1
 .body.t tag configure td-rule -background #c8d1dc
 # A grid's gridlines are the host's ink too.
 .body.t tag configure td-grid -background #c8d1dc
-::tkdown::refit .body.t -quotetags quote
-.body.t tag bind td-link <Enter> {.body.t configure -cursor hand2}
-.body.t tag bind td-link <Leave> {.body.t configure -cursor xterm}
-.body.t tag bind td-link <Button-1> {
-    wm title . "tkdown demo - [::tkdown::link_at .body.t @%x,%y]"
-}
+# A click on a link, in the prose or in a table's cell, hands its url to
+# -link_cmd; a press that drags into a selection opens nothing.
+proc show_link {url} { wm title . "tkdown demo - $url" }
+::tkdown::refit .body.t -quotetags quote -link_cmd show_link
 
 # One call paints the lot with the default emitters; fenced code goes in
 # under the host's own tags.

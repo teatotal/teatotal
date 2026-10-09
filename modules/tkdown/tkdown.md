@@ -36,7 +36,7 @@ Colour and selection stay the host's everywhere. A caller passes its own base ta
 
 | Tag | The host configures | Laid on |
 |---|---|---|
-| `td-link` | `-foreground`, `-underline`, and bindings (`<Button-1>` calling `link_at`) | every link's text |
+| `td-link` | `-foreground`, `-underline`; bindings too when it sets no `-link_cmd` (see Links) | every link's text; its ink is copied onto links in a grid's cells |
 | `td-quotebar` | `-foreground` | the bar opening each line of a quote |
 | `td-rule` | `-background`, the rule's colour | the one line of a rule |
 | `td-grid` | `-background`, the gridline colour | nothing; read when a grid is coloured |
@@ -73,17 +73,17 @@ Each emit call inserts at an index the caller advances, a mark or `end`, paintin
 | Proc | Arguments | Purpose |
 |---|---|---|
 | `ensure_fonts` | | Create the Td\* faces from `TkTextFont` and `TkFixedFont` once per interp and return their fonts dict, `{body TdBody bold TdBodyBold italic TdBodyItalic bolditalic TdBodyBoldItalic mono TdMono monobold TdMonoBold}`. A widget given one of these font names before `ensure_fonts` has created it keeps Tk's fallback face even once the font exists, so a host calls `ensure_fonts` before any widget names a font from it. |
-| `tags` | `w fonts ?option value ...?` | Register a text widget: configure its `td-*` faces from the fonts dict, take the options below, and open its table and link registries. Call once per widget before painting; calling again keeps the tables and links it holds. |
+| `tags` | `w fonts ?option value ...?` | Register a text widget: configure its `td-*` faces from the fonts dict, take the options below, and open its link registry. Call once per widget before painting; calling again keeps the links it holds. |
 | `body` | `w idx text baseTags codeTags ?emitters?` | Paint a markdown body block by block, then one closing newline under `baseTags`. |
 | `prose` | `w idx text baseTags ?suffix?` | Paint one prose run through `emit_prose`, then `suffix` (default `"\n\n"`) under `baseTags`. |
 | `runs` | `w idx text baseTags` | Insert one run's inline spans. |
 | `link_at` | `w idx` | The url of the link under `idx`, or `""`. |
-| `link_scan` | `w needle nocase` | Search the links' urls: `{index url}` per link whose url holds the needle and whose visible text does not, in document order, the index being the start of the link's text. A match in the text, a bare URL's included, is left to the host's own text search. |
-| `table_scan` | `w needle nocase` | Search the tables' cell text: `{mark excerpt}` per matching table, in document order. |
-| `table_spotlight` | `w idx` | Light the table whose mark is at `idx` and put out the one lit before; `""` puts it out. |
+| `link_scan` | `w needle nocase` | Search the links' urls, in the text and in tables' cells: `{index url}` per link whose url holds the needle and whose visible text does not, in document order, the index being the start of the link's text, or for a link in a cell its table's window character. A match in the text, a bare URL's included, is left to the host's own text search. |
+| `table_scan` | `w needle nocase` | Search the tables' cell text, built or not: `{index excerpt}` per matching table, in document order, the index being the table's window character. |
+| `table_spotlight` | `w idx` | Light the table whose window character is at `idx` and put out the one lit before; any other index, `""` included, only puts it out. |
 | `refit` | `w ?option value ...?` | Re-set any option, re-derive the margins, and re-fit every built grid. |
-| `forget` | `w` | Destroy the widget's grids, unset their marks and drop its links before a full re-render. |
-| `unregister` | `w` | Drop the widget from the registry, its grids with it; runs on the widget's `<Destroy>`. |
+| `forget` | `w` | Drop the links tkdown painted, put the spotlight out and cancel a pending refit; for a full re-render, before or after `delete 1.0 end` alike. |
+| `unregister` | `w` | Drop the widget from the registry and take off the bindings tkdown made on it; runs on the widget's `<Destroy>`. |
 
 The options, each re-settable through `refit`:
 
@@ -93,6 +93,7 @@ The options, each re-settable through `refit`:
 | `-quotetags` | `{}` | Tags the default quote emitter lays over a whole quote, for the host's ink and inset. |
 | `-image_cmd` | `{}` | A command called with an image's path, returning a Tk image name or `""`. |
 | `-on_block` | `{}` | A command told of each block `body` paints. |
+| `-link_cmd` | `{}` | A command called with a link's url when the reader clicks the link, in the text or in a grid's cell. With it set tkdown binds the clicks and the hand cursor; without it tkdown binds nothing. See Links. |
 | `-copystyle` | `Copy.TButton` | The ttk style of a grid's copy button, a style the host defines. Until the host defines it, or for any style ttk has no layout for, the module falls back to `TButton`. |
 
 The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic` and `mono`; a missing one is an error. `monobold` is optional and, like any extra key, is kept for the host; nothing in the module draws with it. The heading keys `h1`, `h2` and `h3` are optional, each falling back to `bold`. Levels four through six all paint as `h3`, so a document never asks for a face the host did not size.
@@ -124,21 +125,27 @@ The default rule emitter paints one line holding a single space under `td-rule` 
 
 ### Links
 
-A link's text goes in under the base tags, `td-link`, and a tag of its own, `td-link<N>`, whose number is never reused in the widget. The registry maps that tag to the link's url, which is how `link_at` answers for a click and `link_scan` searches urls a reader cannot see. `forget` deletes the per-link tags with the registry, and `link_scan` drops any link whose text has been deleted.
+A link's text goes in under the base tags, `td-link`, and a tag of its own, `td-link<N>`, whose number is never reused in the widget. The registry maps that tag to the link's url, which is how `link_at` answers for a point in the text and `link_scan` searches urls a reader cannot see. `forget` deletes the per-link tags with the registry, and `link_scan` drops any link whose text has been deleted.
+
+A link inside a table's cell is painted in the cell under the cell's own link tags, carrying the ink of the widget's `td-link` (its `-foreground` and `-underline`, copied when the grid is built and on every `refit`). Its url rides in the cell's bindings, so a cell link is in no registry; `link_scan` finds it from the table itself.
+
+With `-link_cmd` set, tkdown binds the clicks, on `td-link` in the widget and on each cell link, and calls the command with the url. The click is the release: a press on a link followed by a release on the same link, within four pixels of the press, opens it, and a press that drags further is a selection and opens nothing, wherever it ends. The pointer over a link shows `hand2`, and leaving it gives the widget its own cursor back. Without `-link_cmd` tkdown binds nothing on `td-link`, and a host that wants clicks binds the tag itself and asks `link_at` for the url under the pointer; a cell link then has its ink and no click. Setting `-link_cmd` to `{}` through `refit` takes tkdown's bindings off `td-link` again.
 
 ## THE TABLE AND REFIT LIFECYCLE
 
-A pipe table renders as a grid: one embedded window in the text, a frame of gridded `text` cells that wrap their words. A table wider than the pane keeps its columns and folds its long cells onto more lines, so nothing runs past the right edge. Cells take their font from the fonts dict, the header row bold throughout, and inline markdown inside a cell still styles; each column honours the delimiter's left, right or centre alignment. A cell's background and cursor are the text widget's, its ink comes from the first base tag carrying a `-foreground` (the widget's own foreground otherwise), and the frame showing through between the cells is the gridline colour, `td-grid`'s `-background` or the widget's foreground when the host configured none.
+A pipe table renders as a grid: one embedded window in the text, a frame of gridded `text` cells that wrap their words. A table wider than the pane keeps its columns and folds its long cells onto more lines, so nothing runs past the right edge. Cells take their font from the fonts dict, the header row bold throughout, and inline markdown inside a cell still styles, links included; each column honours the delimiter's left, right or centre alignment. A cell's background and cursor are the text widget's, its ink comes from the first base tag carrying a `-foreground` (the widget's own foreground otherwise), and the frame showing through between the cells is the gridline colour, `td-grid`'s `-background` or the widget's foreground when the host configured none.
 
-The window builds itself only when the text first shows it, so a long document costs no widgets until the reader reaches its tables. What search and spotlight need is recorded when the table is painted: the payload, the cells' text as the reader sees it, and a left-gravity mark `tbl#m<N>` on the window character. That character carries `td-tblwin` and the base tags, so a host's fold or elide tag reaches the table like any other text, and it is followed by its newline under the base tags. A table met mid-line starts a line of its own.
+The window's character carries `td-tblwin` and the base tags, so a host's fold or elide tag reaches the table like any other text, and it is followed by its newline under the base tags. A table met mid-line starts a line of its own. The window builds itself only when the text first shows it, so a long document costs no widgets until the reader reaches its tables.
 
-Column widths are fitted to the pane: the room is the widget's inner width less both margins and each column's gridlines and cell padding, every cell's words are measured in the face they paint in, and `table_colwidths` divides the room. A table that fits keeps its natural widths and does not stretch to the pane. Each cell's height follows the width it is given. A grid is fitted once it is built and again, on the next idle pass, whenever the widget is resized or the host calls `refit`; a reading-font change fires no resize, so the host calls `refit`, which measures the words afresh.
+The text widget is where a table lives. Its window's `-create` script carries everything the table was painted from, the parsed payload and the base tags, and the text keeps a record of every embedded window, built or not, elided or not, in document order. Search, spotlight, copy and refit all read the table from there. Nothing in tkdown follows the text's edits: an insert or delete above a table moves its window like any character, and deleting a table's text, `delete 1.0 end` included, removes the table and destroys its grid if built, with nothing left behind to clean up. A grid's frame is `w.tbl<N>`, its number never reused in the widget's life.
+
+Column widths are fitted to the pane: the room is the widget's inner width less both margins and each column's gridlines and cell padding, every cell's words are measured in the face they paint in, and `table_colwidths` divides the room. A table that fits keeps its natural widths and does not stretch to the pane. Each cell's height follows the width it is given. A grid is fitted once it is built and again, on the next idle pass, whenever the widget is resized or the host calls `refit`; a reading-font change fires no resize, so the host calls `refit`, which measures the words afresh. `refit` also repaints every built grid, so a host that re-inks `td-grid`, `td-spot` or `td-link` calls it too.
 
 Under the pointer a grid shows a copy button at its top-right, `-copystyle`'s ttk style, which copies the table to the clipboard as GFM text and shows a tick for a moment; a drag-selection cannot reach into an embedded window, so this is how a reader copies a table. The mouse wheel over a grid scrolls the text widget, with the delta it arrived with.
 
-A text search cannot see into an embedded window either, so the module searches for the host. `table_scan` returns `{mark excerpt}` for each table holding the needle, in document order, the excerpt being the first matching cell's text. The mark is an index like any other: a host can scroll to it, and `table_spotlight` with the same index paints that table's gridlines in `td-spot`'s `-background`, putting out the table lit before. The spotlight takes effect before the table is built, so a jump that scrolls a table into view for the first time shows it lit.
+A text search cannot see into an embedded window either, so the module searches for the host. `table_scan` returns `{index excerpt}` for each table holding the needle, built or not, in document order, the index being the table's window character and the excerpt the first matching cell's text as the reader sees it. The index is current when `table_scan` returns it: a host can scroll to it, and `table_spotlight` with the same index paints that table's gridlines in `td-spot`'s `-background`, putting out the table lit before. The spotlight takes effect before the table is built, so a jump that scrolls a table into view for the first time shows it lit.
 
-Before a full re-render, the host calls `forget`: it destroys every grid, unsets every `tbl#m<N>` mark, deletes the per-link tags, and empties both registries. Table and link numbers carry on across `forget`, so a number never names two tables or two links in one widget's life. A `delete 1.0 end` alone destroys the built grids along with their window characters, and `refit`, `table_scan` and `forget` each drop the record of any table whose window character is gone. A table leaving the record takes its mark with it, a built grid's on the idle pass after its window goes, so a pane repainted many times without `forget` does not pile up `tbl#m<N>` marks. Registration survives `forget`; the registry entry dies with the widget.
+`forget` is for the links: it deletes the per-link tags, empties the link registry, puts the spotlight out and cancels a pending refit. Tables need nothing from it, so a host re-rendering a pane may call it before its `delete 1.0 end` or after it; the order does not matter. Registration survives `forget`; the registry entry dies with the widget.
 
 ## LIMITS
 
