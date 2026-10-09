@@ -18,7 +18,7 @@ package require Tk
 
 set HERE [file dirname [file normalize [info script]]]
 foreach md [glob -directory [file dirname $HERE] -type d *] { ::tcl::tm::path add $md }
-package require streamdoc 1.2
+package require -exact streamdoc 1.3a1
 
 font create DocBody {*}[font actual TkTextFont]
 font create DocHead {*}[font actual TkTextFont] -weight bold

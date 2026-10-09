@@ -51,7 +51,7 @@ The first character of a header line and of a summary line is a state glyph from
 | `detail_show n` / `detail_hide n` / `detail_toggle n` | reveal / re-hide a region's detail layer |
 | `fold_all` / `expand_all` | the table-of-contents reading, and back |
 | `summary_sync` | re-derive the open region's summary line from its payload |
-| `reveal idx ?align?` | run `on_reveal`, unfold and un-hide whatever covers an index, then scroll it into view: `see` (default) scrolls the least, `top` puts its line on the top edge, or as near as the last screenful allows |
+| `reveal idx ?align?` | run `on_reveal`, unfold and un-hide whatever covers an index, then scroll it into view: `see` (default) as Tk's `see`, scrolling a near target just into view and centring a far one; `top` puts the head of its line on the top edge, or as near as the last screenful allows |
 | `region_at idx` | the region containing an index, `-1` for chrome |
 | `detail_tag n` | the tag the host lays on region `n`'s detail lines as it emits |
 | `payload n` / `payload_set n payload` | the region's opaque host dict |
@@ -62,6 +62,7 @@ The first character of a header line and of a summary line is a state glyph from
 | `batch script` | run mutations with the widget editable and the view anchored once |
 | `follow` | jump to the tail and latch there |
 | `scroll_to args` | `yview args` on the text, as the reader: lets go of the tail latch; the scrollbar's command |
+| `bindtag w` | the tag streamdoc's bindings on widget `w` live on, `streamdoc$w`, inserted into `w`'s bindtags just after `w`'s own the first time |
 | `textwidget` | the text widget, the handle for tag configuration, tag bindings, and painting at the door through a painter that takes a widget and an index (such as a markdown renderer) |
 
 Every mutating primitive ends in `check_invariant`. The host inserts only inside a door, at `[my door]`, and never moves marks or sets `-elide`.
@@ -70,7 +71,7 @@ Every mutating primitive ends in `check_invariant`. The host inserts only inside
 
 All content, chrome and region alike, goes through the door inside a `batch`, in whole newline-terminated lines. While a region is open the door feeds it: `append_open` pops any standing summary line so new content lands inside the region, not under its summary, and `append_close` re-appends the summary from the current payload - the one legal rewrite window a mid-document line gets. Between regions the door appends chrome.
 
-`rewind` is the door's undo: take a `savepoint` before emitting a provisional tail, then rewind to it and re-emit. The mark survives the cut (left gravity holds it at the boundary), so a feed can rewind to the same point repeatedly - the shape a wet-tail streaming renderer needs, and the mechanism the base class's own summary pop is built on.
+`rewind` is the door's undo: take a `savepoint` before emitting a provisional tail, then rewind to it and re-emit. The mark survives the cut (left gravity holds it at the boundary), so a feed can rewind to the same point repeatedly - the shape a streaming renderer needs when it redraws its unfinished last block on every chunk, and the mechanism the base class's own summary pop is built on.
 
 ## THE STREAMING CONTRACT
 
@@ -80,7 +81,8 @@ The widget's defining behaviour: content arriving while the user reads never mov
 - With `-autofollow 1` and the reader at the tail, the view latches to the tail and follows streamed appends (the `tail -f` / chat contract). Only the reader lets go of the latch: wheel or touchpad scrolling and the `Prior`/`Next`/`Up`/`Down`/`Home`/`End` keys on the text, a scrollbar drag, `scroll_to` (so a host's programmatic scroll counts as the reader's), a fold or detail toggle, and a `reveal` or find step whose target is not on the last line. Growth at the tail the reader did not ask for leaves the latch held and re-follows on idle: an append, an embedded window realised or grown after its batch, a resize of the text. A batch that finds the view on the tail takes the latch.
 - `follow` jumps to the tail and re-latches.
 - `<<AtBottom>>` and `<<LeftBottom>>` fire on the host frame when the view reaches or leaves the last line, so a host can show a "jump to latest" affordance the way chat clients do.
-- streamdoc's bindings on the text and the host frame live on a bindtag of its own, `streamdoc` followed by the widget's path, placed right after the widget's own tag and before its class, so a host's bindings on the text run first and a host `break` there wins.
+- streamdoc's bindings on the text and the host frame live on a bindtag of its own, `streamdoc` followed by the widget's path, placed right after the widget's own tag and before its class, so a host's bindings on the text run first and a host `break` there wins. Destroying the instance empties those tags, so a host that keeps the widgets keeps none of streamdoc's bindings.
+- The view moves only on the reader's own action, and an autoscan no press on the text started is not the reader's: a button-1 press held from another widget and dragged off the text's edge does not scroll it, while a drag that began on the text still autoscrolls past the edge.
 
 ## FIND
 
@@ -105,7 +107,7 @@ The widget's defining behaviour: content arriving while the user reads never mov
 - `place_find frame` - puts the find bar on screen; `find_hide` unplaces it through whichever geometry manager this chose. Default: the grid row below the text and scrollbar.
 - `find_chrome_tags` - tags whose text the search skips; a hit starting on one is no hit. Default: `summary`.
 - `find_bound` - the index the text search stops at. Default: `end`.
-- `find_extra term nocase` - `{index excerpt}` pairs for hits the text search cannot see, such as the inside of an embedded window; an index may be a mark. Default: none.
+- `find_extra term nocase` - `{index excerpt}` pairs for hits the text search cannot see, such as the inside of an embedded window; an index may be a mark. `collect` resolves each to a plain index and keeps one hit per index, the first excerpt winning. Default: none.
 - `on_find_collected`, `on_find_stepped i`, `find_cleared` - run after a fresh match set, after landing on hit `i`, and after the hits are cleared. Default: nothing.
 
 Everything else a host adds - header styling, click-to-fold, detail styling - is ordinary tag configuration and tag bindings on tags the host emits itself, resolved back to a region through `region_at`.

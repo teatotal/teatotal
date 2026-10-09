@@ -3,7 +3,8 @@
 # content door, the two elide layers, summary sync while a region streams,
 # rewind, reveal onto an elided target, the anchor contract (a parked
 # reader unmoved by appends below; the autofollow latch at the tail), the
-# door query, the on_reveal hook and the find bar. Audit gate on throughout;
+# door query, the on_reveal hook, the find bar, the autoscan guard and a
+# destroy that leaves the widgets behind. Audit gate on throughout;
 # the last check asserts it never tripped.
 
 package require Tcl 9
@@ -18,7 +19,7 @@ proc bgerror {msg} {
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require streamdoc 1.2
+package require -exact streamdoc 1.3a1
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
@@ -325,6 +326,25 @@ check "reveal top in the last screenful shows the target" 1 \
     [expr {[$T bbox $last] ne ""}]
 check "reveal rejects an unknown align" 1 [catch {$d reveal $idx middle}]
 
+# A hit deep in a wrapped line: `top` shows where the line begins.
+$d batch {
+    set rw [$d region_open [dict create]]
+    set m [$d append_open]
+    $d emit $m "▾ wrapped region\n" {}
+    $d emit $m "[string repeat {word } 40]WRAPHIT [string repeat {word } 10]\n" {}
+    for {set i 0} {$i < 15} {incr i} { $d emit $m "after wrap $i\n" {} }
+    $d append_close $m
+    $d region_close
+}
+$d fold $rw
+$T yview moveto 0
+update
+set idx [at WRAPHIT]
+$d reveal $idx top
+update
+check "reveal top puts a wrapped line's head on the top edge" \
+    [$T index "$idx linestart"] [$T index @0,0]
+
 # ---- door -------------------------------------------------------------------
 check "door errors with no door open" 1 [catch {$d door} msg]
 check "door's error says so" "no door is open" $msg
@@ -414,10 +434,18 @@ $T2 mark set x#1 [$T2 index "[at2 {carrot apple}] linestart"]
 set ::extra [list [list x#1 "excerpt one"] [list x#0 "excerpt zero"]]
 set hits [$g collect apple 1]
 check "find_extra hits merge into document order" 1 \
-    [expr {[lindex $hits 0] eq "x#0" && [lsearch $hits x#1] == 4}]
+    [expr {[lindex $hits 0] eq "1.0" && [lsearch $hits [$T2 index x#1]] == 4}]
 check "find_extra hits count in the result" 7 [llength $hits]
 check "find_excerpt returns the find_extra excerpt" "excerpt one" [$g find_excerpt x#1]
 check "find_excerpt defaults to the hit's line" "carrot apple" [$g find_excerpt [apple "carrot apple"]]
+set ::extra [list [list x#1 "first said"] [list [$T2 index x#1] "second said"]]
+set hits [$g collect zzz 1]
+check "an index find_extra names twice is one hit" [list [$T2 index x#1]] $hits
+check "the first excerpt of a doubled index wins" "first said" [$g find_excerpt x#1]
+fset FindVar zzz
+$g find_next
+check "the readout counts a doubled index once" "1 of 1" [fv FindPos]
+fset FindVar ""
 set ::extra {}
 
 set ::bound [$T2 index "[at2 {END apple}] linestart"]
@@ -526,6 +554,43 @@ bind $T <MouseWheel> {}
 event generate $T <MouseWheel> -delta -120
 check "with the host's binding gone the wheel lets go again" 0 [latched]
 
+# ---- autoscan: only a press on this text starts one -------------------------
+proc settle {} { after 400 {set ::settled 1}; vwait ::settled }
+proc stray_leave {} {
+    event generate $::T <B1-Leave> -x 10 -y [expr {[winfo height $::T] + 50}] -state 256
+}
+proc from_top {} { $::d scroll_to moveto 0; update; return [lindex [$::T yview] 0] }
+set y0 [from_top]
+stray_leave
+settle
+check "a stray B1-Leave with no press leaves the view" $y0 [lindex [$T yview] 0]
+
+from_top
+event generate $T <ButtonPress-1> -x 10 -y 10
+stray_leave
+settle
+check "a drag that began on the text autoscrolls past the edge" 1 \
+    [expr {[lindex [$T yview] 0] > $y0}]
+event generate $T <ButtonRelease-1> -x 10 -y 10
+update
+
+from_top
+event generate $T <ButtonPress-1> -x 10 -y 10
+event generate $T <ButtonRelease-1> -x 10 -y 10
+stray_leave
+settle
+check "a stray B1-Leave after a release leaves the view" $y0 [lindex [$T yview] 0]
+
+from_top
+event generate $T <ButtonPress-1> -x 10 -y 10
+event generate $T <Enter> -x 10 -y 10 -state 0
+stray_leave
+settle
+check "Enter with button 1 up heals a press whose release went elsewhere" \
+    $y0 [lindex [$T yview] 0]
+event generate $T <ButtonRelease-1> -x 10 -y 10
+update
+
 oo::define Finder method place_find {frame} { place $frame -x 0 -y 0 -relwidth 1 }
 fset FindVar apple
 $g find_show
@@ -545,6 +610,25 @@ check "find_hide leaves the insert mark at the last hit" $last [$T2 index insert
 $g reset
 check "reset leaves the streamdoc tag on the text once" 1 [tagcount $T2]
 check "reset leaves the host frame's tag once" 1 [tagcount .t2.f]
+
+# ---- destroy: the widgets outlive the instance, their bindings forget it -----
+toplevel .t3
+pack [ttk::frame .t3.f] -fill both -expand 1
+set k [Feed new]
+$k setup .t3.f
+update
+$k destroy
+check "destroy empties streamdoc's tag on the kept text" {} [bind streamdoc.t3.f.text]
+check "destroy empties streamdoc's tag on the kept frame" {} [bind streamdoc.t3.f]
+set f0 $fails
+foreach ev {<Escape> <Prior> <MouseWheel> <Control-f>} {
+    focus -force .t3.f.text; update
+    event generate .t3.f.text $ev
+    update
+}
+event generate .t3.f <Control-f>
+update
+check "events on the kept widgets after destroy raise no error" $f0 $fails
 
 check "audit gate never tripped" 0 [tripped]
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
