@@ -1762,7 +1762,6 @@ proc ::tkdown::link_press {t x y} {
     set pressed($t) [list $tag $x $y]
 }
 
-# A double- or triple-click's later press: the click it repeats was the one.
 proc ::tkdown::link_unpress {t} {
     variable pressed
     unset -nocomplain pressed($t)

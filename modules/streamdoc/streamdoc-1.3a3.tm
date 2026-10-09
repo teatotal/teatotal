@@ -332,12 +332,9 @@ oo::class create ::streamdoc::StreamDoc {
     }
 
     # A host may keep the widgets past the instance; nothing streamdoc bound
-    # on them may call it after. Its bindtags are emptied, the find bar it
-    # built goes, its commands on the text and scrollbar are cleared, and
-    # each embedded window loses its watch: the <Configure> script
-    # window_watch appended, and the window_realise wrapper round a -create
-    # script, which gives way to the host's script inside it. A built window
-    # keeps its -create too; Tk runs it again if the window is destroyed.
+    # on them may call it after. That includes the wrapper round a built
+    # window's -create script: Tk runs the script again if the window is
+    # destroyed, so every window gets the host's script back, built or not.
     destructor {
         if {[info exists FollowAfter] && $FollowAfter ne ""} {
             after cancel $FollowAfter

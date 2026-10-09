@@ -779,7 +779,7 @@ proc click {t idx {dx 0} {dy 0} {back 0}} {
     update
 }
 # n press-release pairs in place at idx, close enough in time for Tk to make
-# them a double- or triple-click, a second after any earlier click.
+# them a double- or triple-click, ten seconds after any earlier click.
 proc clicks {t idx n} {
     lassign [$t bbox $idx] x y bw bh
     set x [expr {$x + $bw / 2}]
