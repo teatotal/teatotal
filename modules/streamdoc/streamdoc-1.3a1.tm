@@ -53,11 +53,9 @@ namespace eval ::streamdoc {}
 # View anchoring: `batch` brackets a streamed mutation with anchor_save /
 # anchor_restore, so content landing below a parked reader never moves the
 # line they are on. With -autofollow on and the reader at the tail, the view
-# latches there and follows appends (the tail -f contract). Only the reader
-# lets go of the latch: their own scrolling, `scroll_to`, a fold or detail
-# toggle, or a reveal away from the last line. Growth they did not ask for
-# leaves it held and re-follows. <<AtBottom>> / <<LeftBottom>> fire on the
-# host frame at the edges, and `follow` jumps back to the tail.
+# latches there and follows appends (the tail -f contract; "the tail latch"
+# below says what lets go). <<AtBottom>> / <<LeftBottom>> fire on the host
+# frame at the edges, and `follow` jumps back to the tail.
 #
 # Find (Ctrl-F): a bar under the text whose entry collects every literal
 # hit, folded and hidden text included, tags it `find`, and steps through

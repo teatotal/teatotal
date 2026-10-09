@@ -81,15 +81,10 @@ proc ::tkdown::segment_code_fences {body} {
 # (`![alt](url)` for an image). Labels match without case or runs of
 # whitespace. A `[^note]` label is a footnote and is left, definition and use.
 # Fenced lines and backtick spans are untouched, and a use whose label has no
-# definition stays literal. Definitions reach the whole document, so a host
-# that segments runs this over the text first; body does not.
-# Rewrite a document's reference links as inline ones: every `[label]: url`
-# definition line is removed and each `[text][label]`, `[label][]` or bare
-# `[label]` becomes `[text](url)`. Definitions are document-scoped and
-# usually sit at the end, so the host runs this over the whole document
-# before any splitting; body does not, since a host painting one section
-# at a time would hand it a text without its definitions. A label starting
-# with `^` is a footnote and is left alone, definition and reference both.
+# definition stays literal. Definitions are document-scoped and usually sit
+# at the end, so the host runs this over the whole document before any
+# splitting; body does not, since a host painting one section at a time
+# would hand it a text without its definitions.
 proc ::tkdown::resolve_refs {text} {
     set defs [dict create]
     set kept [list]
