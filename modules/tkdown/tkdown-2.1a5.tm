@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.1a4
+package provide tkdown 2.1a5
 
 namespace eval ::tkdown {
     namespace export parse_inline resolve_refs segment_code_fences segment_blockquotes \
@@ -895,10 +895,13 @@ proc ::tkdown::segment_lists {text} {
 #     span); a backslash before anything else is kept verbatim (paths and
 #     regex carry many). A code span is literal, backslashes included, so
 #     `a\.b` shows a\.b, with one exception: a backslash before a backtick
-#     keeps the span open and paints the backtick alone, so `a \`b\` c`
-#     shows a `b` c. A span therefore cannot end in a backslash before its
-#     closing backtick. (CommonMark has no escape inside a code span; chat
-#     and transcript markdown writes a nested backtick this way.)
+#     escapes it while the span can still close further on, so `a \`b\` c`
+#     shows a `b` c and `x \`y\`` shows x `y`. Where no closer follows, the
+#     backslash is literal and its backtick may close the span, so
+#     `C:\Drivers\` shows C:\Drivers\. The cost: in `cd\`, `cd~` the first
+#     span runs on to the third backtick. (CommonMark has no escape inside a
+#     code span; chat and transcript markdown writes a nested backtick this
+#     way.)
 proc ::tkdown::parse_inline {text} {
     # Escapes in the prose go to private-use sentinels so the marker scans
     # never meet them; any stray sentinel in the raw input is dropped first.
@@ -933,7 +936,10 @@ proc ::tkdown::parse_inline {text} {
         set fence [expr {$j - $i}]
         set close -1
         if {$fence <= 2} {
-            set close [::tkdown::inline_close_code $text $j $fence]
+            if {![info exists closes($fence)]} {
+                set closes($fence) [::tkdown::inline_code_closes $text $fence]
+            }
+            set close [lindex $closes($fence) $j]
         }
         if {$close < 0} {
             append buf [string range $text $i [expr {$j - 1}]]
@@ -941,13 +947,13 @@ proc ::tkdown::parse_inline {text} {
             continue
         }
         if {$buf ne ""} { lappend segs prose $buf; set buf "" }
-        set content [string range $text $j [expr {$close - 1}]]
+        set content [::tkdown::inline_code_text $text $j $close $closes($fence)]
         if {[string length $content] >= 2 && [string index $content 0] eq " " \
                 && [string index $content end] eq " " \
                 && [string trim $content] ne ""} {
             set content [string range $content 1 end-1]
         }
-        lappend segs code [string map [list \\` `] $content]
+        lappend segs code $content
         set i [expr {$close + $fence}]
     }
     if {$buf ne ""} { lappend segs prose $buf }
@@ -994,20 +1000,56 @@ proc ::tkdown::parse_inline {text} {
 }
 
 
-# Index of the closing backtick run of exactly `fence` backticks at or after
-# `from`, or -1. Runs of a different length are literal content, so skipped,
-# and so is any run a backslash precedes: that backtick is escaped.
-proc ::tkdown::inline_close_code {s from fence} {
+# Where a code span of `fence` backticks closes, for each place its content
+# could start: a list over 0..n+1 of the index of the closing run, or -1. A
+# backtick run of another length is literal. A backslash-backtick pair is one
+# escaped backtick when the scan from after the pair still finds a closer;
+# otherwise the backslash is literal and the run from its backtick is
+# examined as a closer. Built right to left, so each pair's lookahead is one
+# lookup, and once per text, since where a scan ends does not depend on where
+# the span opened.
+proc ::tkdown::inline_code_closes {s fence} {
     set n [string length $s]
-    set i $from
-    while {$i < $n} {
-        if {[string index $s $i] ne "`"} { incr i; continue }
-        set k $i
-        while {$k < $n && [string index $s $k] eq "`"} { incr k }
-        if {($k - $i) == $fence && [string index $s $i-1] ne "\\"} { return $i }
-        set i $k
+    set closes [lrepeat [expr {$n + 2}] -1]
+    set run 0
+    for {set i [expr {$n - 1}]} {$i >= 0} {incr i -1} {
+        set ch [string index $s $i]
+        set run [expr {$ch eq "`" ? $run + 1 : 0}]
+        if {$ch eq "`"} {
+            set c [expr {$run == $fence ? $i : [lindex $closes $i+$run]}]
+        } elseif {$ch eq "\\" && [string index $s $i+1] eq "`"
+                && [lindex $closes $i+2] >= 0} {
+            set c [lindex $closes $i+2]
+        } else {
+            set c [lindex $closes $i+1]
+        }
+        lset closes $i $c
     }
-    return -1
+    return $closes
+}
+
+# A code span's content from `from` to its closer at `end`, as painted: each
+# escaped backtick (by the rule in inline_code_closes) without its backslash,
+# every other character as written.
+proc ::tkdown::inline_code_text {s from end closes} {
+    set text ""
+    set i $from
+    while {$i < $end} {
+        set ch [string index $s $i]
+        if {$ch eq "\\" && [string index $s $i+1] eq "`"
+                && [lindex $closes $i+2] >= 0} {
+            append text `
+            incr i 2
+        } elseif {$ch eq "`"} {
+            regexp -start $i {\A`+} $s r
+            append text $r
+            incr i [string length $r]
+        } else {
+            append text $ch
+            incr i
+        }
+    }
+    return $text
 }
 
 # Split one prose run into {style chunk} runs on asterisk emphasis. plain runs

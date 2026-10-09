@@ -19,7 +19,7 @@ package require Tk
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.1a4
+package require -exact tkdown 2.1a5
 
 set fails 0
 proc check {name got want} {
