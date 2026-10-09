@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.1a1
+package provide tkdown 2.1a2
 
 namespace eval ::tkdown {
     namespace export parse_inline resolve_refs segment_code_fences segment_blockquotes \
@@ -442,8 +442,8 @@ proc ::tkdown::delim_align {cell} {
 
 # Split one table row into trimmed cells. Splits on unescaped "|"; a
 # pipe-bounded row drops its empty leading/trailing cell; "\|" becomes a
-# literal "|" in the cell (parse_inline's escape map covers only \` \* \\, so
-# a surviving "\|" would leak a backslash into the rendered cell).
+# literal "|" in the cell (the split has to see the escape before any inline
+# scan does).
 proc ::tkdown::split_row {line} {
     set line [string trim [string trimright $line "\r"]]
     set cells [list]
@@ -875,15 +875,17 @@ proc ::tkdown::segment_lists {text} {
 #   - code spans (one or two backticks) win over everything else, so
 #     asterisks, links and URLs inside `code` stay literal;
 #   - [text](url) is a link whose chunk is the raw text between the brackets,
-#     emphasis markers and all; a bare http:// or https:// URL, or one in
-#     <angle brackets>, is a link whose chunk is the URL itself;
+#     emphasis markers and all; a bare http:// or https:// URL, or an
+#     <angle-bracket autolink> (see inline_links), is a link whose chunk is
+#     the URL itself;
 #   - an inline ![alt](path) shows its alt text in the surrounding style;
 #   - emphasis is asterisks only (*, **, ***): underscores stay literal, so
 #     snake_case, __init__ and the like are left alone;
 #   - an opener needs a non-space char after it and a closer a non-space char
 #     before it (flanking), so "3 * 4" and "* item" stay literal;
-#   - \`, \* and \\ escape a literal backtick, asterisk and backslash; every
-#     other backslash is kept verbatim (paths and regex carry many).
+#   - a backslash before any ASCII punctuation character escapes it (so \$,
+#     \_, \# and \[ read literally); a backslash before anything else is kept
+#     verbatim (paths and regex carry many).
 proc ::tkdown::parse_inline {text} {
     # Escapes go to private-use sentinels so the marker scans never meet them;
     # any stray sentinel in the raw input is dropped first. Links are lifted
@@ -892,8 +894,9 @@ proc ::tkdown::parse_inline {text} {
     set st \uE001 ;# escaped asterisk  -> literal *
     set bs \uE002 ;# escaped backslash -> literal backslash
     set lk \uE003 ;# a link held aside, in order
-    set text [string map [list $bt {} $st {} $bs {} $lk {}] $text]
-    set text [string map [list {\`} $bt {\*} $st {\\} $bs] $text]
+    set text [regsub -all {[\uE000-\uE003\uE100-\uE17F]} $text {}]
+    set text [regsub -all -command {\\([!-/:-@\[-`\x7b-~])} $text \
+        ::tkdown::inline_escape]
 
     # Pass A: peel off code spans; the gaps between them are prose.
     set segs [list]
@@ -1045,15 +1048,36 @@ proc ::tkdown::inline_close_emph {s from runlen} {
     return -1
 }
 
+# The sentinel for an escaped punctuation character: the three the emphasis
+# and code scans care most about have fixed ones, every other ASCII
+# punctuation character maps to \uE100 plus its code point.
+proc ::tkdown::inline_escape {match ch} {
+    switch -- $ch {
+        ` { return \uE000 }
+        * { return \uE001 }
+        \\ { return \uE002 }
+    }
+    scan $ch %c code
+    return [format %c [expr {0xE100 + $code}]]
+}
+
 proc ::tkdown::inline_unescape {s} {
-    return [string map [list \uE000 "`" \uE001 "*" \uE002 "\\"] $s]
+    set s [string map [list \uE000 "`" \uE001 "*" \uE002 "\\"] $s]
+    return [regsub -all -command {[\uE100-\uE17F]} $s {apply {{m} {
+        scan $m %c code
+        format %c [expr {$code - 0xE100}]
+    }}}]
 }
 
 # Lift the links out of one prose gap. Returns {s links}: s is the gap with
 # each link replaced by the \uE003 sentinel and each inline image by its alt
 # text (asterisks escaped, so the alt reads literally), and links is the
 # {text url} pairs in sentinel order. A bare URL must not follow a letter or
-# digit, and loses a trailing punctuation run (url_trim).
+# digit, and loses a trailing punctuation run (url_trim). An angle-bracket
+# autolink <scheme:rest> has a scheme of 2 to 32 characters (a letter, then
+# letters, digits, + . or -) and either a rest starting "//" or the scheme
+# mailto, tel or sms; the rest holds no space, < or >. Any other <...>, as in
+# <xs:element> or std::vector<std::string>, is text.
 proc ::tkdown::inline_links {s} {
     set out ""
     set links [list]
@@ -1081,7 +1105,11 @@ proc ::tkdown::inline_links {s} {
                 continue
             }
         } elseif {$ch eq "<"
-                && [regexp {^<([A-Za-z][A-Za-z0-9+.-]*:[^\s<>]+)>} $rest m url]} {
+                && [regexp {^<([A-Za-z][A-Za-z0-9+.-]{1,31}):([^\s<>]+)>} $rest \
+                    m scheme tail]
+                && ([string range $tail 0 1] eq "//"
+                    || [string tolower $scheme] in {mailto tel sms})} {
+            set url "$scheme:$tail"
             lappend links [list $url $url]
             append out \uE003
             incr i [string length $m]

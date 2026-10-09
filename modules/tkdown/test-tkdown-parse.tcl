@@ -2,7 +2,7 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.1a1
+package require -exact tkdown 2.1a2
 
 set fails 0
 proc check {name expected actual} {
@@ -42,6 +42,13 @@ check unclosed_backtick    {{plain {use the ` key}}} [pi {use the ` key}]
 check escape_asterisk      {{plain *literal*}}    [pi {\*literal\*}]
 check escape_backtick      {{plain `}}            [pi {\`}]
 check escape_backslash     {{plain \\}}           [pi {\\}]
+check escape_dollar        {{plain {costs $18.34}}} [pi {costs \$18.34}]
+check escape_underscore    {{plain _x_}}          [pi {\_x\_}]
+check escape_hash          {{plain #}}            [pi {\#}]
+check escape_path_kept     [list [list plain {C:\Users\me}]] [pi {C:\Users\me}]
+check escape_trailing      [list [list plain "end\\"]] [pi "end\\"]
+check escape_not_link      {{plain {[not a link](x)}}} [pi {\[not a link](x)}]
+check escape_not_code      {{plain `a`}}      [pi {\`a\`}]
 
 # Underscores stay literal (asterisk-only emphasis).
 check snake_case_plain     {{plain {my_var __init__ tool_use_id}}} \
@@ -102,6 +109,22 @@ check inline_autolink_mailto \
 check inline_autolink_tel \
     {{link tel:+61-2-5550100 tel:+61-2-5550100}} \
     [pi {<tel:+61-2-5550100>}]
+check inline_autolink_https {{link https://example.org/ https://example.org/}} \
+    [pi {<https://example.org/>}]
+check inline_autolink_mail  {{link mailto:a@b.org mailto:a@b.org}} \
+    [pi {<mailto:a@b.org>}]
+check inline_autolink_tel2  {{link tel:+61212345678 tel:+61212345678}} \
+    [pi {<tel:+61212345678>}]
+check inline_autolink_file  {{link file:///etc/hosts file:///etc/hosts}} \
+    [pi {<file:///etc/hosts>}]
+# A scheme-shaped pair without // or a contact scheme is text, brackets kept.
+foreach {name src} {
+    xs_element <xs:element>  svg_rect <svg:rect>  w_t <w:t>  t_foo <T:Foo>
+    win_path <C:\Users\me\file.txt>
+    cpp_template std::vector<std::string>
+} {
+    check inline_autolink_lit_$name [list [list plain $src]] [pi $src]
+}
 check inline_autolink_div   {{plain <div>}} [pi {<div>}]
 check inline_autolink_a     {{plain {<a href="x">}}} [pi {<a href="x">}]
 check inline_url_midword \
