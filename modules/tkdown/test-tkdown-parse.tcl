@@ -2,7 +2,7 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.1a5
+package require -exact tkdown 2.1a6
 
 set fails 0
 proc check {name expected actual} {
@@ -55,9 +55,10 @@ check escape_not_code      {{plain `a`}}      [pi {\`a\`}]
 check code_keeps_escapes   {{code {a\.b \(x\) \$HOME}}} [pi {`a\.b \(x\) \$HOME`}]
 check code_keeps_brackets  {{code {\[x\]}}}      [pi {``\[x\]``}]
 check code_keeps_star_bs   {{code {\* \\ x}}}    [pi {`\* \\ x`}]
-# A backslash before a backtick inside a span is an escaped backtick, painted
-# alone, while the span can still close further on; the backtick after the
-# pair may start a run of its own, closer included.
+# Inside a span, a backslash before a backtick run at least the span's
+# opening length escapes that many backticks, painted alone, while the span
+# can still close later on the same line; the rest of the run is a run of
+# its own, closer included.
 check code_bs_backtick     {{code {status `ok` done}}} [pi {`status \`ok\` done`}]
 check code_bs_then_prose   {{code x`y} {plain { after}}} [pi {`x\`y` after}]
 check code_bs_before_close {{code {x `y`}} {plain { w}}} [pi {`x \`y\`` w}]
@@ -68,6 +69,12 @@ check code_bs_dot_literal  {{code {a\.b}}}       [pi {`a\.b`}]
 check code_bs_dollar       {{code {\$HOME}}}     [pi {`\$HOME`}]
 check code_bs_dbl_span     {{code {x ` y}}}      [pi {`` x ` y ``}]
 check code_bs_dbl_escaped  {{code {x `` y}}}     [pi {`` x \`` y ``}]
+# Before a run shorter than the opening the backslash is literal: a single
+# backtick cannot close a double span. In a single span a double run after
+# the backslash is one escaped backtick and a closer.
+check code_bs_dbl_single   [list [list code "\\`"]] [pi {`` \` ``}]
+check code_bs_dbl_path     [list [list code "`C:\\Drivers\\`"]] [pi {`` `C:\Drivers\` ``}]
+check code_bs_single_dbl   {{code {a `}} {plain { b ` c` d}}} [pi {`a \`` b \` c` d}]
 # With no closer further on, the backslash is literal and its backtick closes
 # the span: Windows paths and a lone backslash.
 check code_bs_path_close   [list [list code "C:\\Drivers\\"] {plain { dated}}]  [pi {`C:\Drivers\` dated}]
@@ -77,6 +84,10 @@ check code_bs_lone         [list [list code "\\"]]   [pi {`\`}]
 # the same line, takes the backslash-backtick as escaped and runs on to the
 # next span's opener, leaving its closer stray.
 check code_bs_next_span    {{code {cd`, }} {plain cd~`}} [pi {`cd\`, `cd~`}]
+# The lookahead stops at the line's end, so the same pair on two lines is two
+# spans; a span with no escape still closes on a later line.
+check code_bs_line_bound   [list {plain {Before: }} [list code "# ... \\"]  [list plain "\nAfter: "] [list code "# ... \\"]]  [pi "Before: `# ... \\`\nAfter: `# ... \\`"]
+check code_across_lines    [list [list code "a\nb"] {plain { c}}] [pi "`a\nb` c"]
 check bs_backtick_no_span  {{plain {a ` b ` c}}} [pi {a \` b \` c}]
 check code_after_escaped_bs [list [list plain "\\"] [list code x]] [pi {\\`x`}]
 

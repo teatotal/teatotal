@@ -63,13 +63,16 @@ The parse half splits a body in layers, each splitter seeing a body the ones abo
 
 A list item opens with `-`, `*` or `+` and a space, its marker `•`, or with ASCII digits, a dot and a space, its marker those digits and the dot, so a list keeps its source numbering. Its depth is its indentation in steps of two spaces or one tab. A non-blank line under an item that opens no item of its own, flush left or indented, joins that item's text and keeps its line break: the item's text holds a newline between the two source lines, the continuation's own indentation dropped. Blank lines followed by another item keep the list going; blank lines followed by anything else end it. `tcl 9.0`, `1.2.3` and `- - -` open nothing.
 
-The inline rules are pragmatic rather than full CommonMark. A code span wins over everything else, so asterisks, brackets, URLs and backslashes inside a span stay literal. The one exception is a backslash before a backtick, which counts as an escaped backtick, painted alone, while the span can still close later in the text; where no backtick closes the span later, the backslash is literal and its backtick closes the span. The examples sit in a fence because a span cannot quote them:
+The inline rules are pragmatic rather than full CommonMark. A code span wins over everything else, so asterisks, brackets, URLs and backslashes inside a span stay literal. The one exception is a backslash before a backtick run at least the span's opening length, which escapes as many backticks as the opening has, painted without the backslash, while the span can still close later on the same line; otherwise the backslash is literal and the run may close the span. A span itself may run on across lines. The examples sit in a fence because a span cannot quote them:
 
 ```
 `a\.b`                   a\.b
 `status \`ok\` done`     status `ok` done
 `C:\Drivers\` dated      C:\Drivers\   then the prose: dated
 `\`                      \
+`` x \`` y ``            x `` y
+`` \` ``                 \`
+`` `C:\Drivers\` ``      `C:\Drivers\`
 ```
 
 `[text](url)` is a link whose display text is the raw text between the brackets; a bare `http://` or `https://` URL, or an `<scheme:rest>` autolink in angle brackets (`<https://example.org/>`, `<mailto:someone@example.org>`, `<tel:+61255550100>`; the scheme is 2 to 32 characters, a letter then letters, digits, `+`, `.` or `-`, and the rest begins with `//` or the scheme is `mailto`, `tel` or `sms`, and holds no space, `<` or `>`; anything else in angle brackets, such as `<div>`, a C++ template like `std::vector<std::string>` or a namespaced XML tag like `<xs:element>`, stays literal, brackets included), is a link whose text is the URL, less any trailing punctuation and any unbalanced closing parenthesis. An inline `![alt](path)` shows its alt text as plain text. Emphasis is asterisks only, so `snake_case` and `__init__` are left alone. An opener needs a non-space character after it and a closer one before it, so `3 * 4` and a `* ` bullet stay literal. Outside a code span a backslash escapes any ASCII punctuation character (`\$18.34`, `\_`, `\#`, `\[not a link](x)`), and a backslash before anything else, or at the end of the text, is kept verbatim, so paths and regex survive intact.
@@ -165,7 +168,7 @@ tkdown is not a full CommonMark implementation. A quote is one level deep: a `>`
 
 tkdown also takes completed blocks, not a stream: each call paints a finished body in one pass. A host streaming content re-renders the affected block from its own model and repaints it whole.
 
-Escaping a backtick inside a code span is tkdown's one departure from CommonMark there, which has no escape inside a span; chat and transcript markdown writes a nested backtick that way. An escaped backtick counts only while the span can still close later in the text, so a span ending in a backslash closes when no later backtick follows. The one miss is such a span followed by another span: in `` `cd\`, `cd~` `` the backslash-backtick reads as escaped, the first span runs on to the second span's opening backtick, and that span's closing backtick shows as a stray.
+Escaping a backtick inside a code span is tkdown's one departure from CommonMark there, which has no escape inside a span; chat and transcript markdown writes a nested backtick that way. An escaped backtick counts only while the span can still close later on the same line, so a span ending in a backslash closes when no later backtick on its line follows, and a backslash before a run shorter than the span's opening, which could never close it, is always literal. The one miss is such a span followed by another span on the same line: in `` `cd\`, `cd~` `` the backslash-backtick reads as escaped, the first span runs on to the second span's opening backtick, and that span's closing backtick shows as a stray.
 
 ## REQUIREMENTS
 

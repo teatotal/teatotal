@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.1a5
+package provide tkdown 2.1a6
 
 namespace eval ::tkdown {
     namespace export parse_inline resolve_refs segment_code_fences segment_blockquotes \
@@ -895,13 +895,15 @@ proc ::tkdown::segment_lists {text} {
 #     span); a backslash before anything else is kept verbatim (paths and
 #     regex carry many). A code span is literal, backslashes included, so
 #     `a\.b` shows a\.b, with one exception: a backslash before a backtick
-#     escapes it while the span can still close further on, so `a \`b\` c`
-#     shows a `b` c and `x \`y\`` shows x `y`. Where no closer follows, the
-#     backslash is literal and its backtick may close the span, so
-#     `C:\Drivers\` shows C:\Drivers\. The cost: in `cd\`, `cd~` the first
-#     span runs on to the third backtick. (CommonMark has no escape inside a
-#     code span; chat and transcript markdown writes a nested backtick this
-#     way.)
+#     run at least the span's opening length escapes that many backticks
+#     while the span can still close later on the same line, so `a \`b\` c`
+#     shows a `b` c, `x \`y\`` shows x `y` and ``a \`` b`` shows a `` b.
+#     Otherwise the backslash is literal and the run may close the span, so
+#     `C:\Drivers\` shows C:\Drivers\, and `` \` `` shows \` since a single
+#     backtick cannot close a double span. A span may close on a later line.
+#     The cost: in `cd\`, `cd~` the first span runs on to the third
+#     backtick. (CommonMark has no escape inside a code span; chat and
+#     transcript markdown writes a nested backtick this way.)
 proc ::tkdown::parse_inline {text} {
     # Escapes in the prose go to private-use sentinels so the marker scans
     # never meet them; any stray sentinel in the raw input is dropped first.
@@ -936,10 +938,10 @@ proc ::tkdown::parse_inline {text} {
         set fence [expr {$j - $i}]
         set close -1
         if {$fence <= 2} {
-            if {![info exists closes($fence)]} {
-                set closes($fence) [::tkdown::inline_code_closes $text $fence]
+            if {![info exists scans($fence)]} {
+                set scans($fence) [::tkdown::inline_code_closes $text $fence]
             }
-            set close [lindex $closes($fence) $j]
+            set close [lindex $scans($fence) 0 $j]
         }
         if {$close < 0} {
             append buf [string range $text $i [expr {$j - 1}]]
@@ -947,7 +949,7 @@ proc ::tkdown::parse_inline {text} {
             continue
         }
         if {$buf ne ""} { lappend segs prose $buf; set buf "" }
-        set content [::tkdown::inline_code_text $text $j $close $closes($fence)]
+        set content [::tkdown::inline_code_text $text $j $close  [lindex $scans($fence) 1] $fence]
         if {[string length $content] >= 2 && [string index $content 0] eq " " \
                 && [string index $content end] eq " " \
                 && [string trim $content] ne ""} {
@@ -1001,51 +1003,55 @@ proc ::tkdown::parse_inline {text} {
 
 
 # Where a code span of `fence` backticks closes, for each place its content
-# could start: a list over 0..n+1 of the index of the closing run, or -1. A
-# backtick run of another length is literal. A backslash-backtick pair is one
-# escaped backtick when the scan from after the pair still finds a closer;
-# otherwise the backslash is literal and the run from its backtick is
-# examined as a closer. Built right to left, so each pair's lookahead is one
-# lookup, and once per text, since where a scan ends does not depend on where
-# the span opened.
+# could start, and which backslashes in it escape: {closes escapes}, closes a
+# list over 0..n+1 of the index of the closing run or -1, escapes a list over
+# 0..n-1 of 1 at each escaping backslash. A backtick run of another length is
+# literal. A backslash before a run of at least `fence` backticks escapes
+# `fence` of them when the scan from after those finds a closer before the
+# next newline, the rest of the run being a run of its own; otherwise the
+# backslash is literal and the run is examined as a closer.
+# Built right to left, so each lookahead is one lookup, and once per text,
+# since where a scan ends does not depend on where the span opened.
 proc ::tkdown::inline_code_closes {s fence} {
     set n [string length $s]
     set closes [lrepeat [expr {$n + 2}] -1]
+    set escapes [lrepeat $n 0]
     set run 0
+    set eol $n
     for {set i [expr {$n - 1}]} {$i >= 0} {incr i -1} {
         set ch [string index $s $i]
-        set run [expr {$ch eq "`" ? $run + 1 : 0}]
         if {$ch eq "`"} {
-            set c [expr {$run == $fence ? $i : [lindex $closes $i+$run]}]
-        } elseif {$ch eq "\\" && [string index $s $i+1] eq "`"
-                && [lindex $closes $i+2] >= 0} {
-            set c [lindex $closes $i+2]
-        } else {
-            set c [lindex $closes $i+1]
+            incr run
+            lset closes $i [expr {$run == $fence ? $i : [lindex $closes $i+$run]}]
+            continue
+        }
+        if {$ch eq "\n"} { set eol $i }
+        set c [lindex $closes $i+1]
+        if {$ch eq "\\" && $run >= $fence} {
+            set after [lindex $closes [expr {$i + 1 + $fence}]]
+            if {$after >= 0 && $after < $eol} {
+                set c $after
+                lset escapes $i 1
+            }
         }
         lset closes $i $c
+        set run 0
     }
-    return $closes
+    return [list $closes $escapes]
 }
 
 # A code span's content from `from` to its closer at `end`, as painted: each
-# escaped backtick (by the rule in inline_code_closes) without its backslash,
+# escape (by inline_code_closes) as `fence` backticks without its backslash,
 # every other character as written.
-proc ::tkdown::inline_code_text {s from end closes} {
+proc ::tkdown::inline_code_text {s from end escapes fence} {
     set text ""
     set i $from
     while {$i < $end} {
-        set ch [string index $s $i]
-        if {$ch eq "\\" && [string index $s $i+1] eq "`"
-                && [lindex $closes $i+2] >= 0} {
-            append text `
-            incr i 2
-        } elseif {$ch eq "`"} {
-            regexp -start $i {\A`+} $s r
-            append text $r
-            incr i [string length $r]
+        if {[lindex $escapes $i]} {
+            append text [string repeat ` $fence]
+            incr i [expr {$fence + 1}]
         } else {
-            append text $ch
+            append text [string index $s $i]
             incr i
         }
     }
