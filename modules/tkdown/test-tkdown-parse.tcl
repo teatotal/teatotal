@@ -57,8 +57,8 @@ check code_keeps_brackets  {{code {\[x\]}}}      [pi {``\[x\]``}]
 check code_keeps_star_bs   {{code {\* \\ x}}}    [pi {`\* \\ x`}]
 # Inside a span, a backslash before a backtick run at least the span's
 # opening length escapes that many backticks, painted alone, while the span
-# can still close later on the same line; the rest of the run is a run of
-# its own, closer included.
+# can still close later on the same line; the rest of the run is read afresh
+# and may close the span.
 check code_bs_backtick     {{code {status `ok` done}}} [pi {`status \`ok\` done`}]
 check code_bs_then_prose   {{code x`y} {plain { after}}} [pi {`x\`y` after}]
 check code_bs_before_close {{code {x `y`}} {plain { w}}} [pi {`x \`y\`` w}]
@@ -84,7 +84,7 @@ check code_bs_lone         [list [list code "\\"]]   [pi {`\`}]
 # the same line, takes the backslash-backtick as escaped and runs on to the
 # next span's opener, leaving its closer stray.
 check code_bs_next_span    {{code {cd`, }} {plain cd~`}} [pi {`cd\`, `cd~`}]
-# The lookahead stops at the line's end, so the same pair on two lines is two
+# An escape needs its closer on the same line, so the same pair on two lines is two
 # spans; a span with no escape still closes on a later line.
 check code_bs_line_bound   [list {plain {Before: }} [list code "# ... \\"]  [list plain "\nAfter: "] [list code "# ... \\"]]  [pi "Before: `# ... \\`\nAfter: `# ... \\`"]
 check code_across_lines    [list [list code "a\nb"] {plain { c}}] [pi "`a\nb` c"]

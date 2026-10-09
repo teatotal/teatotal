@@ -168,7 +168,7 @@ tkdown is not a full CommonMark implementation. A quote is one level deep: a `>`
 
 tkdown also takes completed blocks, not a stream: each call paints a finished body in one pass. A host streaming content re-renders the affected block from its own model and repaints it whole.
 
-Escaping a backtick inside a code span is tkdown's one departure from CommonMark there, which has no escape inside a span; chat and transcript markdown writes a nested backtick that way. An escaped backtick counts only while the span can still close later on the same line, so a span ending in a backslash closes when no later backtick on its line follows, and a backslash before a run shorter than the span's opening, which could never close it, is always literal. The one miss is such a span followed by another span on the same line: in `` `cd\`, `cd~` `` the backslash-backtick reads as escaped, the first span runs on to the second span's opening backtick, and that span's closing backtick shows as a stray.
+Escaping a backtick inside a code span is tkdown's one departure from CommonMark there, which has no escape inside a span; chat and transcript markdown writes a nested backtick that way. An escaped backtick counts only while the span can still close later on the same line, so a span ending in a backslash closes when no closer follows on its line, and a backslash before a run shorter than the span's opening, which could never close it, is always literal. The one miss is such a span followed by another span on the same line: in `` `cd\`, `cd~` `` the backslash-backtick reads as escaped, the first span runs on to the second span's opening backtick, and that span's closing backtick shows as a stray.
 
 ## REQUIREMENTS
 

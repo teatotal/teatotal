@@ -1008,7 +1008,7 @@ proc ::tkdown::parse_inline {text} {
 # 0..n-1 of 1 at each escaping backslash. A backtick run of another length is
 # literal. A backslash before a run of at least `fence` backticks escapes
 # `fence` of them when the scan from after those finds a closer before the
-# next newline, the rest of the run being a run of its own; otherwise the
+# next newline, the rest of the run then read afresh; otherwise the
 # backslash is literal and the run is examined as a closer.
 # Built right to left, so each lookahead is one lookup, and once per text,
 # since where a scan ends does not depend on where the span opened.
