@@ -1,6 +1,6 @@
 package require Tcl 9
 package require Tk
-package provide streamdoc 1.3a3
+package provide streamdoc 1.3
 
 namespace eval ::streamdoc {}
 
