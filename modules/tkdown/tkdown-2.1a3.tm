@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.1a2
+package provide tkdown 2.1a3
 
 namespace eval ::tkdown {
     namespace export parse_inline resolve_refs segment_code_fences segment_blockquotes \
@@ -16,7 +16,8 @@ namespace eval ::tkdown {
     # grid section).
     variable widgets [dict create]
     # A press on a link awaiting its release, per text widget (a pane or a
-    # grid's cell): {tag x y}. See link_release.
+    # grid's cell): {tag x y}, tag "" once the press can open nothing. See
+    # link_release.
     variable pressed
     # A widget's own cursor while the pointer is over one of its links.
     variable cursors
@@ -84,16 +85,18 @@ proc ::tkdown::segment_code_fences {body} {
 # definition stays literal. Definitions are document-scoped and usually sit
 # at the end, so the host runs this over the whole document before any
 # splitting; body does not, since a host painting one section at a time
-# would hand it a text without its definitions.
+# would hand it a text without its definitions. A CRLF document's lines are
+# matched without their "\r" and keep it in the result.
 proc ::tkdown::resolve_refs {text} {
     set defs [dict create]
     set kept [list]
     set infence 0
     foreach line [split $text "\n"] {
-        if {[::tkdown::fence_line $line]} {
+        set bare [string trimright $line "\r"]
+        if {[::tkdown::fence_line $bare]} {
             set infence [expr {!$infence}]
         } elseif {!$infence && [regexp {^ {0,3}\[([^\]]+)\]:[ \t]*(<[^>]*>|[^\s<]\S*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$} \
-                $line -> label url]
+                $bare -> label url]
                 && [string index $label 0] ne "^"} {
             set url [string trim $url "<>"]
             set key [::tkdown::ref_key $label]
@@ -106,10 +109,11 @@ proc ::tkdown::resolve_refs {text} {
     set out [list]
     set infence 0
     foreach line $kept {
-        if {[::tkdown::fence_line $line]} {
+        set bare [string trimright $line "\r"]
+        if {[::tkdown::fence_line $bare]} {
             set infence [expr {!$infence}]
         } elseif {!$infence} {
-            set line [::tkdown::ref_line $line $defs]
+            set line [::tkdown::ref_line $bare $defs][string range $line [string length $bare] end]
         }
         lappend out $line
     }
@@ -122,7 +126,8 @@ proc ::tkdown::ref_key {label} {
 }
 
 # Rewrite the references on one line against defs, passing over backtick
-# spans and backslash escapes.
+# spans and backslash escapes. A url with whitespace or unbalanced parens
+# goes in <angle brackets>, where neither ends the destination.
 proc ::tkdown::ref_line {line defs} {
     set br {\[((?:[^\[\]\\]|\\.)*)\]}
     set out ""
@@ -162,7 +167,9 @@ proc ::tkdown::ref_line {line defs} {
                 if {$label ne "" && [string index $label 0] ne "^"
                         && [dict exists $defs $key]} {
                     set url [dict get $defs $key]
-                    if {[regexp {\s} $url]} { set url <$url> }
+                    if {[regexp {\s} $url] || [::tkdown::paren_debt $url]} {
+                        set url <$url>
+                    }
                     append out [expr {$img ? "!" : ""}] "\[$text\]($url)"
                     set i $end
                     continue
@@ -883,29 +890,37 @@ proc ::tkdown::segment_lists {text} {
 #     snake_case, __init__ and the like are left alone;
 #   - an opener needs a non-space char after it and a closer a non-space char
 #     before it (flanking), so "3 * 4" and "* item" stay literal;
-#   - a backslash before any ASCII punctuation character escapes it (so \$,
-#     \_, \# and \[ read literally); a backslash before anything else is kept
-#     verbatim (paths and regex carry many).
+#   - outside a code span, a backslash before any ASCII punctuation character
+#     escapes it (so \$, \_, \# and \[ read literally, and \` opens no code
+#     span); a backslash before anything else is kept verbatim (paths and
+#     regex carry many). A code span is literal, backslashes included, so
+#     `a\.b` shows a\.b and `a\` closes on its second backtick.
 proc ::tkdown::parse_inline {text} {
-    # Escapes go to private-use sentinels so the marker scans never meet them;
-    # any stray sentinel in the raw input is dropped first. Links are lifted
-    # out to a sentinel of their own before the emphasis scan.
+    # Escapes in the prose go to private-use sentinels so the marker scans
+    # never meet them; any stray sentinel in the raw input is dropped first.
+    # Links are lifted out to a sentinel of their own before the emphasis scan.
     set bt \uE000 ;# escaped backtick  -> literal `
     set st \uE001 ;# escaped asterisk  -> literal *
     set bs \uE002 ;# escaped backslash -> literal backslash
     set lk \uE003 ;# a link held aside, in order
     set text [regsub -all {[\uE000-\uE003\uE100-\uE17F]} $text {}]
-    set text [regsub -all -command {\\([!-/:-@\[-`\x7b-~])} $text \
-        ::tkdown::inline_escape]
 
-    # Pass A: peel off code spans; the gaps between them are prose.
+    # Pass A: peel off code spans; the gaps between them are prose. An escape
+    # pair in the prose is stepped over whole, so an escaped backtick never
+    # opens a span.
     set segs [list]
     set buf ""
     set i 0
     set n [string length $text]
     while {$i < $n} {
-        if {[string index $text $i] ne "`"} {
-            append buf [string index $text $i]
+        set ch [string index $text $i]
+        if {$ch eq "\\" && [regexp {[!-/:-@\[-`\x7b-~]} [string index $text $i+1]]} {
+            append buf [string range $text $i $i+1]
+            incr i 2
+            continue
+        }
+        if {$ch ne "`"} {
+            append buf $ch
             incr i
             continue
         }
@@ -933,14 +948,16 @@ proc ::tkdown::parse_inline {text} {
     }
     if {$buf ne ""} { lappend segs prose $buf }
 
-    # Pass B: links out, emphasis within each prose gap, links back in where
-    # their sentinels landed; unescape every emitted chunk.
+    # Pass B: escapes to sentinels, links out, emphasis within each prose gap,
+    # links back in where their sentinels landed; unescape every emitted chunk.
     set runs [list]
     foreach {kind chunk} $segs {
         if {$kind eq "code"} {
-            lappend runs [list code [::tkdown::inline_unescape $chunk]]
+            lappend runs [list code $chunk]
             continue
         }
+        set chunk [regsub -all -command {\\([!-/:-@\[-`\x7b-~])} $chunk \
+            ::tkdown::inline_escape]
         lassign [::tkdown::inline_links $chunk] chunk links
         set k 0
         foreach run [::tkdown::inline_emphasis $chunk] {
@@ -1073,11 +1090,12 @@ proc ::tkdown::inline_unescape {s} {
 # each link replaced by the \uE003 sentinel and each inline image by its alt
 # text (asterisks escaped, so the alt reads literally), and links is the
 # {text url} pairs in sentinel order. A bare URL must not follow a letter or
-# digit, and loses a trailing punctuation run (url_trim). An angle-bracket
-# autolink <scheme:rest> has a scheme of 2 to 32 characters (a letter, then
-# letters, digits, + . or -) and either a rest starting "//" or the scheme
-# mailto, tel or sms; the rest holds no space, < or >. Any other <...>, as in
-# <xs:element> or std::vector<std::string>, is text.
+# digit, holds no space, < or >, and loses a trailing punctuation run
+# (url_trim). An angle-bracket autolink <scheme:rest> has a scheme of 2 to 32
+# characters (a letter, then letters, digits, + . or -) and either a rest
+# starting "//" or the scheme mailto, tel or sms; the rest holds no space, <
+# or >. Any other <...>, as in <xs:element> or std::vector<std::string>, is
+# text.
 proc ::tkdown::inline_links {s} {
     set out ""
     set links [list]
@@ -1114,7 +1132,7 @@ proc ::tkdown::inline_links {s} {
             append out \uE003
             incr i [string length $m]
             continue
-        } elseif {$ch eq "h" && [regexp {^https?://[^\s<]+} $rest m]
+        } elseif {$ch eq "h" && [regexp {^https?://[^\s<>]+} $rest m]
                 && ![string is alnum -strict [string index $s [expr {$i - 1}]]]} {
             set url [::tkdown::url_trim $m]
             if {[regexp {://.} $url]} {
@@ -1133,8 +1151,9 @@ proc ::tkdown::inline_links {s} {
 # If a [text](dest) link starts at index i of s, return {text url next},
 # where next is the index just past its closing paren; else "". Brackets in
 # the text and parens in the destination nest. The destination is a URL,
-# optionally in <angle brackets>, optionally followed by a quoted title,
-# which is dropped; an empty URL or anything else after it is no link.
+# optionally in <angle brackets> (inside which parens are only text),
+# optionally followed by a quoted title, which is dropped; an empty URL or
+# anything else after it is no link.
 proc ::tkdown::inline_link_at {s i} {
     set n [string length $s]
     set depth 0
@@ -1144,8 +1163,12 @@ proc ::tkdown::inline_link_at {s i} {
         if {$c eq "\]" && [incr depth -1] == 0} break
     }
     if {$j >= $n || [string index $s [expr {$j + 1}]] ne "("} { return "" }
-    set depth 0
-    for {set k [expr {$j + 1}]} {$k < $n} {incr k} {
+    set k [expr {$j + 1}]
+    if {[regexp {^\s*<[^<>]*>} [string range $s [expr {$j + 2}] end] m]} {
+        set k [expr {$j + 1 + [string length $m]}]
+    }
+    set depth 1
+    for {incr k} {$k < $n} {incr k} {
         set c [string index $s $k]
         if {$c eq "("} { incr depth }
         if {$c eq ")" && [incr depth -1] == 0} break
@@ -1159,6 +1182,16 @@ proc ::tkdown::inline_link_at {s i} {
     if {$url eq ""} { return "" }
     return [list [string range $s [expr {$i + 1}] [expr {$j - 1}]] $url \
         [expr {$k + 1}]]
+}
+
+# Whether url's parens fail to nest: a ")" with no "(" open before it, or a
+# "(" left open at the end.
+proc ::tkdown::paren_debt {url} {
+    set depth 0
+    foreach c [split [regsub -all {[^()]} $url {}] ""] {
+        if {[incr depth [expr {$c eq "(" ? 1 : -1}]] < 0} { return 1 }
+    }
+    return [expr {$depth != 0}]
 }
 
 # A bare URL with its trailing punctuation dropped, GFM's autolink trim: any
@@ -1590,6 +1623,8 @@ proc ::tkdown::refit_run {w} {
 # names two links.
 proc ::tkdown::forget {w} {
     variable widgets
+    variable pressed
+    variable cursors
     if {![dict exists $widgets $w]} return
     after cancel [dict get $widgets $w fittok]
     dict set widgets $w fittok ""
@@ -1599,6 +1634,13 @@ proc ::tkdown::forget {w} {
         if {[llength $tags]} { $w tag delete {*}$tags }
     }
     dict set widgets $w links [dict create]
+    # A grid deleted with the pointer over a link, or mid-press, leaves its
+    # cell's entries behind.
+    foreach v {pressed cursors} {
+        foreach t [array names $v] {
+            if {![winfo exists $t]} { unset ${v}($t) }
+        }
+    }
 }
 
 # The url of the link under idx, or "".
@@ -1672,22 +1714,43 @@ proc ::tkdown::index_order {w a b} {
 }
 
 # Bind -link_cmd's click and the hand cursor on w's td-link, or, with no
-# command, take tkdown's bindings off it, leaving the tag to the host. A
-# grid's cells bind their links at build and ask for -link_cmd on the click.
+# command, take tkdown's bindings off it, leaving the tag to the host, and
+# give w its own cursor back should the pointer be over a link. A grid's
+# cells bind their links at build and ask for -link_cmd on the click.
 proc ::tkdown::link_bind {w} {
     variable widgets
+    variable pressed
     set on [expr {[dict get $widgets $w link_cmd] ne ""}]
-    foreach {ev script} [list \
-            <ButtonPress-1>   [list ::tkdown::link_press $w %x %y] \
-            <ButtonRelease-1> [list ::tkdown::link_release $w $w %x %y] \
-            <Enter>           [list ::tkdown::link_hand $w $w 1] \
-            <Leave>           [list ::tkdown::link_hand $w $w 0]] {
+    foreach {ev script} [::tkdown::link_scripts $w $w ""] {
         if {$on} {
             $w tag bind td-link $ev $script
         } elseif {[$w tag bind td-link $ev] eq $script} {
             $w tag bind td-link $ev {}
         }
     }
+    if {!$on} {
+        ::tkdown::link_hand $w $w 0
+        unset -nocomplain pressed($w)
+    }
+}
+
+# The event-script pairs a link in text widget t (the pane w or one of its
+# cells) is bound with; url is a cell link's, held in its release script
+# with its "%" doubled so the binding's substitution gives it back intact.
+# A second or third press in place arrives as a Double or Triple press,
+# not a plain one, and records nothing, so a double-click opens the link
+# once.
+proc ::tkdown::link_scripts {w t url} {
+    set rel "[list ::tkdown::link_release $w $t] %x %y"
+    if {$t ne $w} { append rel " " [string map {% %%} [list $url]] }
+    return [list \
+        <ButtonPress-1>        [list ::tkdown::link_press $t %x %y] \
+        <Double-ButtonPress-1> [list ::tkdown::link_unpress $t] \
+        <Triple-ButtonPress-1> [list ::tkdown::link_unpress $t] \
+        <B1-Motion>            [list ::tkdown::link_drag $t %x %y] \
+        <ButtonRelease-1>      $rel \
+        <Enter>                [list ::tkdown::link_hand $w $t 1] \
+        <Leave>                [list ::tkdown::link_hand $w $t 0]]
 }
 
 # A press on a link in text widget t, the pane or a cell: note the link's
@@ -1699,12 +1762,29 @@ proc ::tkdown::link_press {t x y} {
     set pressed($t) [list $tag $x $y]
 }
 
+# A double- or triple-click's later press: the click it repeats was the one.
+proc ::tkdown::link_unpress {t} {
+    variable pressed
+    unset -nocomplain pressed($t)
+}
+
+# The pointer moving with the button down: once it is more than 4 pixels
+# from the press, the press is a drag and opens nothing, wherever it ends.
+proc ::tkdown::link_drag {t x y} {
+    variable pressed
+    if {![info exists pressed($t)]} return
+    lassign $pressed($t) tag px py
+    if {abs($x - $px) > 4 || abs($y - $py) > 4} {
+        set pressed($t) [list "" $px $py]
+    }
+}
+
 # The release after a press on a link calls -link_cmd with the link's url
-# when it lands on the same link within 4 pixels of the press. Distance
-# rather than the sel tag decides, because a selection the press itself
-# left (a double-click's word) is no drag; a pointer moved further than
-# that is a drag-selection, wherever it ends. url is a cell's link's; in
-# the pane the registry holds it.
+# when it lands on the same link within 4 pixels of the press, the pointer
+# having kept within them throughout (link_drag). Distance rather than the
+# sel tag decides, because a selection the press itself left (a
+# double-click's word) is no drag. url is a cell's link's; in the pane the
+# registry holds it.
 proc ::tkdown::link_release {w t x y {url ""}} {
     variable widgets
     variable pressed
@@ -1894,7 +1974,9 @@ proc ::tkdown::emit_rule {w idx baseTags} {
 # records every embedded window, built or not, elided or not: `dump -window`
 # lists them in document order with their indices, `window cget -create`
 # gives the script back (table_spec), and deleting the text drops the record
-# and destroys a built frame. Search, spotlight, copy and refit read what
+# and destroys a built frame. The text substitutes %W and %% in the script
+# before running it, so the script is stored with every "%" doubled and
+# table_spec halves them again. Search, spotlight, copy and refit read what
 # they need from there, so nothing here follows the text's edits. The one
 # table state outside the text is the entry's spot, the lit table's id.
 
@@ -1914,8 +1996,8 @@ proc ::tkdown::emit_table {w idx payload baseTags} {
         $w insert $idx "\n" $baseTags
         set at [$w index "$at +1c"]
     }
-    $w window create $idx -align top -pady 2 -stretch 0 \
-        -create [list ::tkdown::table_realize $w $id $payload $baseTags]
+    $w window create $idx -align top -pady 2 -stretch 0 -create [string map \
+        {% %%} [list ::tkdown::table_realize $w $id $payload $baseTags]]
     foreach tag [concat $baseTags [list td-tblwin]] { $w tag add $tag $at }
     $w tag raise td-tblwin
     $w insert $idx "\n" $baseTags
@@ -1926,6 +2008,7 @@ proc ::tkdown::emit_table {w idx payload baseTags} {
 # holds no grid of w's.
 proc ::tkdown::table_spec {w idx} {
     if {[catch {$w window cget $idx -create} script]} { return "" }
+    set script [string map {%% %} $script]
     if {[lindex $script 0] ne "::tkdown::table_realize"
             || [lindex $script 1] ne $w} { return "" }
     return [lrange $script 2 end]
@@ -2011,12 +2094,10 @@ proc ::tkdown::table_fill_cell {w c fonts cell header align} {
             bolditalic { set tags bi }
             link {
                 set tags [list lk lnk[incr n]]
-                $c tag bind lnk$n <ButtonPress-1> \
-                    [list ::tkdown::link_press $c %x %y]
-                $c tag bind lnk$n <ButtonRelease-1> \
-                    [list ::tkdown::link_release $w $c %x %y $url]
-                $c tag bind lk <Enter> [list ::tkdown::link_hand $w $c 1]
-                $c tag bind lk <Leave> [list ::tkdown::link_hand $w $c 0]
+                foreach {ev script} [::tkdown::link_scripts $w $c $url] {
+                    $c tag bind [expr {$ev in {<Enter> <Leave>} ? "lk" : "lnk$n"}] \
+                        $ev $script
+                }
             }
             default    { set tags {} }
         }

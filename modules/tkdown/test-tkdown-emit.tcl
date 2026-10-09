@@ -19,7 +19,7 @@ package require Tk
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.1a2
+package require -exact tkdown 2.1a3
 
 set fails 0
 proc check {name got want} {
@@ -419,8 +419,9 @@ check "a grid spotlit before it was built is born lit" \
     [$S.tbl1 cget -background] #00ff00
 check "with no td-grid, the gridlines take the pane's foreground" \
     [::tkdown::grid_colour $S] [$S cget -foreground]
-::tkdown::refit $S -copystyle TButton
-check "refit restyles a built button" [$S.tbl1.copy cget -style] TButton
+ttk::style configure Probe.TButton -padding 1
+::tkdown::refit $S -copystyle Probe.TButton
+check "refit restyles a built button" [$S.tbl1.copy cget -style] Probe.TButton
 destroy .s
 update
 check "destroying the pane unregisters it" \
@@ -758,7 +759,8 @@ set ::opened {}
 proc opened {url} { lappend ::opened $url }
 # A press, an optional drag to (dx,dy), and a release, on text widget t at
 # the character idx, the pointer first moved there so the text sees the tag.
-proc click {t idx {dx 0} {dy 0}} {
+# With back set the drag returns to the press point before the release.
+proc click {t idx {dx 0} {dy 0} {back 0}} {
     lassign [$t bbox $idx] x y bw bh
     set x [expr {$x + $bw / 2}]
     set y [expr {$y + $bh / 2}]
@@ -767,9 +769,30 @@ proc click {t idx {dx 0} {dy 0}} {
     if {$dx || $dy} {
         event generate $t <B1-Motion> -x [expr {$x + $dx}] -y [expr {$y + $dy}]
     }
-    event generate $t <ButtonRelease-1> -x [expr {$x + $dx}] -y [expr {$y + $dy}]
+    if {$back} {
+        event generate $t <B1-Motion> -x $x -y $y
+    } else {
+        incr x $dx
+        incr y $dy
+    }
+    event generate $t <ButtonRelease-1> -x $x -y $y
     update
 }
+# n press-release pairs in place at idx, close enough in time for Tk to make
+# them a double- or triple-click, a second after any earlier click.
+proc clicks {t idx n} {
+    lassign [$t bbox $idx] x y bw bh
+    set x [expr {$x + $bw / 2}]
+    set y [expr {$y + $bh / 2}]
+    set ms [incr ::clocktime 10000]
+    event generate $t <Motion> -x $x -y $y -time $ms
+    for {set k 0} {$k < $n} {incr k} {
+        event generate $t <ButtonPress-1> -x $x -y $y -time [incr ms 20]
+        event generate $t <ButtonRelease-1> -x $x -y $y -time [incr ms 20]
+    }
+    update
+}
+set ::clocktime 0
 set L [pane lnk]
 ::tkdown::tags $L $FA -link_cmd opened
 $L tag configure td-link -foreground #0000ff -underline 1
@@ -814,6 +837,25 @@ check "a click on a cell link calls -link_cmd with its url" $::opened https://ce
 set ::opened {}
 click $bc 1.1 0 60
 check "a cell press dragged off opens nothing" $::opened {}
+set ::opened {}
+clicks $L "$d +1c" 2
+check "a double-click on a link opens it once" $::opened https://x.org/D
+set ::opened {}
+clicks $L "$d +1c" 3
+check "and a triple-click once" $::opened https://x.org/D
+set ::opened {}
+clicks $bc 1.1 2
+check "a double-click on a cell link opens it once" $::opened https://cell.org/x
+set ::opened {}
+clicks $bc 1.1 3
+check "and a triple-click once" $::opened https://cell.org/x
+set ::opened {}
+click $L "$d +1c" 150 30 1
+check "a press on a link dragged away and back opens nothing" $::opened {}
+$L tag remove sel 1.0 end
+set ::opened {}
+click $bc 1.1 150 0 1
+check "nor does a cell's" $::opened {}
 $L tag configure td-link -foreground #00aa00
 ::tkdown::refit $L
 update
@@ -825,10 +867,16 @@ check "link_scan merges the body's and the cells' links in document order" \
     {https://x.org/D https://h.org/k https://cell.org/x}
 check "a cell link's shown text is not link_scan's" [::tkdown::link_scan $L site 1] {}
 
+lassign [$L bbox "$d +1c"] x y
+event generate $L <Motion> -x [expr {$x + 2}] -y [expr {$y + 2}]
+update
 ::tkdown::refit $L -link_cmd {}
 check "without -link_cmd tkdown takes its bindings off td-link" \
     [lmap ev {<ButtonPress-1> <ButtonRelease-1> <Enter> <Leave>} { $L tag bind td-link $ev }] \
     {{} {} {} {}}
+check "and gives the pane its own cursor back under the pointer" \
+    [list [$L cget -cursor] [info exists ::tkdown::cursors($L)]] {xterm 0}
+set ::opened {}
 click $bc 1.1
 check "and a cell link has ink but no click" $::opened {}
 $L tag bind td-link <ButtonRelease-1> {lappend ::opened host}
@@ -836,6 +884,38 @@ $L tag bind td-link <ButtonRelease-1> {lappend ::opened host}
 check "a host's own td-link binding survives a refit without -link_cmd" \
     [$L tag bind td-link <ButtonRelease-1>] {lappend ::opened host}
 destroy .lnk
+
+# A "%" in a table is the text's own: the cell's url reaches -link_cmd as
+# link_scan gives it, and a cell shows its text as written.
+set P [pane pct]
+::tkdown::tags $P $FA -link_cmd opened
+::tkdown::body $P end "| a | b |\n| --- | --- |\n| \[p\](https://p.org/a%20b%xy?q=%W) | 100%W %% |" base code
+update; update
+set pc $P.tbl1.c1x0
+set ::opened {}
+click $pc 1.0
+check "a cell link's url with % in it reaches -link_cmd as written" \
+    $::opened {https://p.org/a%20b%xy?q=%W}
+check "as link_scan gives it" [lindex [::tkdown::link_scan $P p.org 1] 0 1] \
+    {https://p.org/a%20b%xy?q=%W}
+check "a cell shows its % as written" [$P.tbl1.c1x1 get 1.0 end-1c] {100%W %%}
+$P.tbl1.copy invoke
+check "and the copy button copies it as written" [lindex [split [clipboard get] \n] end] \
+    {| [p](https://p.org/a%20b%xy?q=%W) | 100%W %% |}
+
+# A grid deleted under the pointer leaves no cursor or press behind once
+# the pane is forgotten.
+lassign [$pc bbox 1.0] x y
+event generate $pc <Motion> -x [expr {$x + 1}] -y [expr {$y + 1}]
+event generate $pc <ButtonPress-1> -x [expr {$x + 1}] -y [expr {$y + 1}]
+update
+check "the pointer over a cell link records its cursor and press" \
+    [list [info exists ::tkdown::cursors($pc)] [info exists ::tkdown::pressed($pc)]] {1 1}
+$P delete 1.0 end
+::tkdown::forget $P
+check "forget drops the dead cell's entries" \
+    [list [info exists ::tkdown::cursors($pc)] [info exists ::tkdown::pressed($pc)]] {0 0}
+destroy .pct
 
 puts [expr {$fails ? "FAILED ($fails)" : "PASS"}]
 exit $fails

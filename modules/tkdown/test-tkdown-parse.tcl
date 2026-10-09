@@ -2,7 +2,7 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.1a2
+package require -exact tkdown 2.1a3
 
 set fails 0
 proc check {name expected actual} {
@@ -49,6 +49,14 @@ check escape_path_kept     [list [list plain {C:\Users\me}]] [pi {C:\Users\me}]
 check escape_trailing      [list [list plain "end\\"]] [pi "end\\"]
 check escape_not_link      {{plain {[not a link](x)}}} [pi {\[not a link](x)}]
 check escape_not_code      {{plain `a`}}      [pi {\`a\`}]
+
+# A code span is literal, backslashes included; one before the closing
+# backticks escapes nothing.
+check code_keeps_escapes   {{code {a\.b \(x\) \$HOME}}} [pi {`a\.b \(x\) \$HOME`}]
+check code_keeps_brackets  {{code {\[x\]}}}      [pi {``\[x\]``}]
+check code_keeps_star_bs   {{code {\* \\}}}      [pi {`\* \\`}]
+check code_closes_after_bs [list [list code "a\\"] [list plain " b`"]] [pi "`a\\` b`"]
+check code_after_escaped_bs [list [list plain "\\"] [list code x]] [pi {\\`x`}]
 
 # Underscores stay literal (asterisk-only emphasis).
 check snake_case_plain     {{plain {my_var __init__ tool_use_id}}} \
@@ -130,6 +138,12 @@ check inline_autolink_a     {{plain {<a href="x">}}} [pi {<a href="x">}]
 check inline_url_midword \
     {{plain xhttps://x.org}} \
     [pi {xhttps://x.org}]
+check inline_url_not_past_gt \
+    {{plain <} {link http://x.org http://x.org} {plain >}} \
+    [pi {\<http://x.org>}]
+check inline_link_angle_parens \
+    {{link a x)y(z} {plain { q}}} \
+    [pi {[a](<x)y(z>) q}]
 check inline_url_bare_scheme \
     [list {plain https://.}] \
     [pi {https://.}]
@@ -602,6 +616,15 @@ check ref_inline_kept "\[x\](other) and \[x\](u)" \
 check ref_full_undefined "\[a\]\[nope\] \[b\](u)" \
     [rr "\[a\]\[nope\] \[b\]\[x\]\n\[x\]: u"]
 check ref_not_a_def_indented "    \[x\]: u" [rr "    \[x\]: u"]
+check ref_parens_balanced "\[w\](http://x/T_(l))" [rr "\[w\]\n\[w\]: http://x/T_(l)"]
+check ref_paren_close "see \[a\](<http://x/a)b>)" [rr "see \[a\]\n\[a\]: http://x/a)b"]
+check ref_paren_close_parses {{plain {see }} {link a http://x/a)b}} \
+    [pi [rr "see \[a\]\n\[a\]: http://x/a)b"]]
+check ref_paren_open "\[a\](<http://x/a(b>)" [rr "\[a\]\n\[a\]: http://x/a(b"]
+check ref_crlf "see \[a\](http://x/)\r\n\r\nend\r\n" \
+    [rr "see \[a\]\r\n\r\n\[a\]: http://x/\r\nend\r\n"]
+check ref_crlf_fence "```\r\n\[a\]\r\n```\r\n\[a\](u)\r\n" \
+    [rr "```\r\n\[a\]\r\n```\r\n\[a\]\r\n\[a\]: u\r\n"]
 
 if {$fails > 0} {
     puts "$fails failures"
