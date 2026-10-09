@@ -2,7 +2,7 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact tkdown 2.1a6
+package require tkdown 2.1
 
 set fails 0
 proc check {name expected actual} {
