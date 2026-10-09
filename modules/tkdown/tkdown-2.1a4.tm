@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide tkdown 2.1a3
+package provide tkdown 2.1a4
 
 namespace eval ::tkdown {
     namespace export parse_inline resolve_refs segment_code_fences segment_blockquotes \
@@ -894,7 +894,11 @@ proc ::tkdown::segment_lists {text} {
 #     escapes it (so \$, \_, \# and \[ read literally, and \` opens no code
 #     span); a backslash before anything else is kept verbatim (paths and
 #     regex carry many). A code span is literal, backslashes included, so
-#     `a\.b` shows a\.b and `a\` closes on its second backtick.
+#     `a\.b` shows a\.b, with one exception: a backslash before a backtick
+#     keeps the span open and paints the backtick alone, so `a \`b\` c`
+#     shows a `b` c. A span therefore cannot end in a backslash before its
+#     closing backtick. (CommonMark has no escape inside a code span; chat
+#     and transcript markdown writes a nested backtick this way.)
 proc ::tkdown::parse_inline {text} {
     # Escapes in the prose go to private-use sentinels so the marker scans
     # never meet them; any stray sentinel in the raw input is dropped first.
@@ -943,7 +947,7 @@ proc ::tkdown::parse_inline {text} {
                 && [string trim $content] ne ""} {
             set content [string range $content 1 end-1]
         }
-        lappend segs code $content
+        lappend segs code [string map [list \\` `] $content]
         set i [expr {$close + $fence}]
     }
     if {$buf ne ""} { lappend segs prose $buf }
@@ -991,7 +995,8 @@ proc ::tkdown::parse_inline {text} {
 
 
 # Index of the closing backtick run of exactly `fence` backticks at or after
-# `from`, or -1. Runs of a different length are literal content, so skipped.
+# `from`, or -1. Runs of a different length are literal content, so skipped,
+# and so is any run a backslash precedes: that backtick is escaped.
 proc ::tkdown::inline_close_code {s from fence} {
     set n [string length $s]
     set i $from
@@ -999,7 +1004,7 @@ proc ::tkdown::inline_close_code {s from fence} {
         if {[string index $s $i] ne "`"} { incr i; continue }
         set k $i
         while {$k < $n && [string index $s $k] eq "`"} { incr k }
-        if {($k - $i) == $fence} { return $i }
+        if {($k - $i) == $fence && [string index $s $i-1] ne "\\"} { return $i }
         set i $k
     }
     return -1
