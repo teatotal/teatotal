@@ -19,7 +19,7 @@ proc bgerror {msg} {
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact streamdoc 1.3a1
+package require -exact streamdoc 1.3a2
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
@@ -447,6 +447,14 @@ $g find_next
 check "the readout counts a doubled index once" "1 of 1" [fv FindPos]
 fset FindVar ""
 set ::extra {}
+# a text hit never shows an excerpt an earlier collect left at its index
+set ::extra [list [list 1.0 "old url"]]
+$g collect zzz 1
+check "an extra hit's excerpt is kept for its own collect" "old url" [$g find_excerpt 1.0]
+set ::extra {}
+$g collect intro 1
+check "a later text hit at that index excerpts its line" \
+    [string trim [$T2 get 1.0 "1.0 lineend"]] [$g find_excerpt 1.0]
 
 set ::bound [$T2 index "[at2 {END apple}] linestart"]
 check "find_bound stops the text search" 4 [llength [$g collect apple 1]]
@@ -455,8 +463,11 @@ set ::bound end
 $g collect_matches carrot
 check "collect_matches removes the earlier find tags" 0 [lit [at2 "apple one"]]
 check "collect_matches sets FindMatches" [list [at2 carrot]] [fv FindMatches]
+check "collect_matches puts the term in the entry" carrot [fv FindVar]
 check "collect_matches leaves no hit shown" -1 [fv FindCur]
 check "collect_matches updates the readout" "1 of 1" [fv FindPos]
+$g find_next
+check "a step after collect_matches walks that set" 0 [fv FindCur]
 
 # Stepping: the term in the entry is new, so find_next recollects.
 $g fold 0

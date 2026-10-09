@@ -82,7 +82,7 @@ The widget's defining behaviour: content arriving while the user reads never mov
 - `follow` jumps to the tail and re-latches.
 - `<<AtBottom>>` and `<<LeftBottom>>` fire on the host frame when the view reaches or leaves the last line, so a host can show a "jump to latest" affordance the way chat clients do.
 - streamdoc's bindings on the text and the host frame live on a bindtag of its own, `streamdoc` followed by the widget's path, placed right after the widget's own tag and before its class, so a host's bindings on the text run first and a host `break` there wins. Destroying the instance empties those tags, so a host that keeps the widgets keeps none of streamdoc's bindings.
-- The view moves only on the reader's own action, and an autoscan no press on the text started is not the reader's: a button-1 press held from another widget and dragged off the text's edge does not scroll it, while a drag that began on the text still autoscrolls past the edge.
+- The view moves only on the reader's own action, and an autoscan no press on the text started is not the reader's: a button-1 press held from another widget and dragged off the text's edge does not scroll it, while a drag that began on the text still autoscrolls past the edge. That press reaches streamdoc's tag only if the host's own bindings let it through, so a host `<ButtonPress-1>` binding on the text widget that ends in `break` hides the press from the tag and a drag that starts in the text no longer autoscrolls past the edge.
 
 ## FIND
 
@@ -90,13 +90,13 @@ The widget's defining behaviour: content arriving while the user reads never mov
 |---|---|
 | `find_show` / `find_hide` | place the Ctrl-F bar and focus its entry / unplace it and clear the hits, the insert mark left at the last hit |
 | `find_next` / `find_prev` | step to the next or previous hit with wraparound, through `reveal`; the first step after the term or the case box changed recollects |
-| `collect term nocase` | tag every literal hit `find` and return the hits in document order, text hits merged with `find_extra`'s; existing `find` tags stay |
-| `collect_matches pattern` | remove the `find` tag, then `collect` under the case box: sets `FindMatches`, resets `FindCur`, updates the readout |
+| `collect term nocase` | tag every literal hit `find` and return the hits in document order, text hits merged with `find_extra`'s; existing `find` tags stay; a text hit's excerpt is always its line, whatever an earlier `collect` left at its index |
+| `collect_matches pattern` | remove the `find` tag, then `collect` under the case box: sets `FindMatches` and the entry to the term, resets `FindCur`, updates the readout; the host's way to search a term, `find_next` then steps its hits |
 | `find_clear` | remove the `find` tag, empty the hits and the readout |
 | `find_excerpt idx` | a hit's excerpt: its `find_extra` excerpt, else its line's text |
 | `build_find` | build the bar: entry, `N of M` readout, `Aa` case box, Prev, Next, ✕ |
 
-`setup` builds the bar and binds it: `<Control-f>` on the host frame and the text shows it, `<Escape>` on the text or the entry hides it, `<Return>` and `<Shift-Return>` in the entry step forward and back. The text search runs with `-elide`, so a hit inside a folded region or a hidden detail block is found and the step opens it. Calling `collect` once per term keeps every term lit, and a host that fills `FindMatches` itself steps through that set while the entry holds the term last collected. The bar is plain ttk; the host configures the `find` tag for the highlight. A subclass reads `FindMatches` (indices or marks), `FindCur` (0-based, `-1` before the first step), `FindVar` (the entry), `FindPos` (the readout) and `FindNocase` (`1` by default; the `Aa` box sets it to `0`).
+`setup` builds the bar and binds it: `<Control-f>` on the host frame and the text shows it, `<Escape>` on the text or the entry hides it, `<Return>` and `<Shift-Return>` in the entry step forward and back. The text search runs with `-elide`, so a hit inside a folded region or a hidden detail block is found and the step opens it. Calling `collect` once per term keeps every term lit, and a host that fills `FindMatches` itself steps through that set while the entry holds the term last collected. The bar is plain ttk; the host configures the `find` tag for the highlight. A subclass reads, through `my variable`, `FindMatches` (indices or marks), `FindCur` (0-based, `-1` before the first step), `FindVar` (the entry's text), `FindPos` (the readout's text) and `FindNocase` (`1` by default; the `Aa` box sets it to `0`).
 
 ## HOOKS
 

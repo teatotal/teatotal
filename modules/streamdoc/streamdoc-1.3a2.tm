@@ -1,6 +1,6 @@
 package require Tcl 9
 package require Tk
-package provide streamdoc 1.3a1
+package provide streamdoc 1.3a2
 
 namespace eval ::streamdoc {}
 
@@ -890,7 +890,9 @@ oo::class create ::streamdoc::StreamDoc {
     # keeps them all lit. -elide finds folded and hidden text; reveal opens
     # it on the jump. A hit starting under a find_chrome_tags tag is skipped.
     # find_extra hits are merged in by resolved index and keep their
-    # excerpts; an index named twice counts once, under its first excerpt.
+    # excerpts; an index named twice counts once, under its first excerpt. A
+    # text hit drops any excerpt an earlier collect left at its index, so it
+    # always excerpts its line.
     method collect {term nocase} {
         if {$term eq ""} { return [list] }
         set opts [list -elide -count len]
@@ -910,6 +912,7 @@ oo::class create ::streamdoc::StreamDoc {
             }
             if {$chrome} continue
             $Text tag add find $m "$m + ${len}c"
+            dict unset FindExcerpt $m
             lappend hits $m
         }
         foreach hit [my find_extra $term $nocase] {
@@ -924,12 +927,15 @@ oo::class create ::streamdoc::StreamDoc {
     }
 
     # The bar's collection: a fresh match set for one term, under the case
-    # box, nothing shown yet.
+    # box, nothing shown yet. The entry takes the term too, so a step after
+    # a host's call walks this set instead of recollecting for the entry's
+    # old text.
     method collect_matches {pattern} {
         $Text tag remove find 1.0 end
         set FindExcerpt [dict create]
         set FindMatches [my collect $pattern $FindNocase]
         set FindCur -1
+        set FindVar $pattern
         set LastFindVar $pattern
         set LastNocase $FindNocase
         my update_find_readout

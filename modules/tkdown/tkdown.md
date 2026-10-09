@@ -57,7 +57,7 @@ The parse half splits a body in layers, each splitter seeing a body the ones abo
 | `segment_headings` | `{kind payload}` | `normal` (text), `heading` (`{level title}`): an ATX line of one to six `#` and a space, its closing `#` run dropped, or a setext pair, a line of text over an underline of three or more `=` (level 1) or `-` (level 2). The line above an underline must be non-blank plain text, and neither line may hold a `\|`, so a table's delimiter row is never an underline. Lines inside a fence are never headings, and the fence lines stay in the normal text. |
 | `segment_rules` | `{kind payload}` | `normal` (text), `rule` (empty): a line of three or more `-`, `*` or `_`, spaces allowed between, that is not a setext underline and not inside a fence |
 | `segment_images` | `{kind payload}` | `normal` (text), `image` (`{alt path}`): a line holding nothing but one `![alt](path)`, an optional quoted title after the path |
-| `segment_tables` | `{kind payload}` | `normal` (text), `table` (`{align <per-col> rows <header-then-body>}`, every row padded or cut to the header's width) |
+| `segment_tables` | `{kind payload}` | `normal` (text), `table` (`{align <per-col> rows <header-then-body>}`, each align `left`, `right` or `center`, every row padded or cut to the header's width); a host with rows of its own builds the same payload and hands it to `emit_table` |
 | `segment_lists` | `{kind payload}` | `normal` (text), `list` (the items in source order, each `{depth marker text}`) |
 | `parse_inline` | ordered runs | `{style chunk}` with style `plain`, `code`, `bold`, `italic` or `bolditalic`, and `{link chunk url}`; markers stripped, adjacent plain runs coalesced, the display text always at index 1 |
 
@@ -112,7 +112,7 @@ The fonts dict requires the keys `body`, `bold`, `italic`, `bolditalic` and `mon
 | `image` | `cmd w idx alt path baseTags` | `emit_image` |
 | `rule` | `cmd w idx baseTags` | `emit_rule` |
 
-Every block ends its own line before the next begins. The walk closes a prose block's last line itself, and closes any other block's line its emitter left open, so a table under a list starts on a line of its own.
+Every block ends its own line before the next begins. Each default emitter closes its own line, so one called directly at a mark leaves the mark on a fresh line; the walk closes a prose block's last line itself, and closes any other block's line a host's emitter left open, so a table under a list starts on a line of its own.
 
 After each block, `-on_block` is called as `cmd kind start end text`: `start` is the first character of the block's own content and `end` the index just past everything it inserted, exclusive. A newline an emitter writes ahead of a quote, rule, image or table to set it off, such as the blank line the default quote emitter puts between prose and a quote, lies before `start`, so a host inserting at `start` lands on the block's first painted line. `text` is the block's text (a quote's de-quoted, a table's as GFM, an image's alt, a rule's empty). It fires for every non-empty block `body` paints, each time it paints it, so a host that repaints a range hears its blocks again; a prose block of nothing but blank lines, the gap between two other blocks, is painted and not reported.
 
