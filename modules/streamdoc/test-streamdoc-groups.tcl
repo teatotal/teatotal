@@ -15,7 +15,7 @@ proc bgerror {msg} {
 
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package require -exact streamdoc 1.4a1
+package require streamdoc 1.4
 set ::env(STREAMDOC_AUDIT) 1
 
 set fails 0
