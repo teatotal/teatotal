@@ -34,7 +34,7 @@ Without `-done` the call is synchronous: it runs the event loop internally and r
 : Run *argv* under the watchdog. Returns the result dict (sync) or a handle (with `-done`).
 
   `-stdin s`
-  : Feed *s* to the child's stdin, encoded as UTF-8 bytes on a binary channel, written blocking so the whole input drains past the pipe buffer, then the write half is closed so the child sees EOF. Getting this sequence wrong truncates input at the first non-ASCII character or the pipe-buffer boundary, which is why the module owns it.
+  : Feed *s* to the child's stdin as UTF-8, in chunks from the event loop while stdout drains and the detectors run, then close the write half so the child sees EOF. A child that writes before it has read everything cannot deadlock the launch, `-wall` and `-stall` cover the feed, and with `-done` the call returns at once however slowly the child reads. A child that exits early forfeits the rest of its input.
 
   `-out chan-or-file`
   : Tee stdout there as lines arrive (an open channel is used and left open; a path is opened line-buffered). Without `-out`, stdout is collected and returned in the result.
@@ -75,7 +75,7 @@ Without setsid on PATH (`gsetsid` is probed too, for hosts whose coreutils carry
 
 ## LIMITS
 
-The `-stdin` write is blocking and runs before any detector is armed, so a child that never reads its stdin while the input exceeds the pipe buffer holds the launch until it does, and a child that meanwhile fills its own stdout pipe deadlocks the launch outright; no detector can fire during that window. Callers feeding large inputs to children that write before they read should not use `-stdin`. A lead process that closes its own stdout by hand and lives on delays the reap until it exits; with a stall or wall armed it is killed long before that matters. Progress means lines: a child that emits one endless unterminated line reads as silent to the stall clock.
+A lead process that closes its own stdout by hand and lives on delays the reap until it exits; with a stall or wall armed it is killed long before that matters. Progress means lines: a child that emits one endless unterminated line reads as silent to the stall clock.
 
 ## NOTES
 

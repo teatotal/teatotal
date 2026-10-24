@@ -9,6 +9,7 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
+package prefer latest
 package require deadman
 
 set fails 0
@@ -127,6 +128,43 @@ check err-merged 1 [expr {[string match "*out*" [dict get $r stdout]] \
 
 set r [deadman::run {cat} -stdin "héllo 中文\n"]
 check stdin-roundtrip "héllo 中文\n" [dict get $r stdout]
+
+# -- a child that writes before it has read everything does not wedge the feed -
+#    200KB is past both pipe buffers: a feed that blocks ahead of the drain
+#    deadlocks here, and the wall, never reached, cannot end it.
+
+set big [string repeat "abc\n" 50000]
+set t0 [clock milliseconds]
+set r [deadman::run {tr a A} -stdin $big -wall 5000 -grace 300]
+set dt [expr {[clock milliseconds] - $t0}]
+check stdin-writefirst-cause exit [dict get $r cause]
+check stdin-writefirst-out   1 [expr {[dict get $r stdout] eq [string map {a A} $big]}]
+check stdin-writefirst-prompt 1 [expr {$dt < 3000}]
+
+# -- the wall covers the feed: a child that never reads still meets it ---------
+
+set t0 [clock milliseconds]
+set r [deadman::run {sh -c {sleep 30}} -stdin $big -wall 300 -grace 300]
+set dt [expr {[clock milliseconds] - $t0}]
+check stdin-unread-cause  wall [dict get $r cause]
+check stdin-unread-prompt 1 [expr {$dt < 5000}]
+
+# -- with -done the call returns at once, however slowly the child reads -------
+
+set t0 [clock milliseconds]
+deadman::run {sh -c {sleep 0.5; cat}} -stdin $big -done {set ::slowfeed}
+set dt [expr {[clock milliseconds] - $t0}]
+check stdin-done-returns 1 [expr {$dt < 200}]
+vwait ::slowfeed
+check stdin-done-out 1 [expr {[dict get $slowfeed stdout] eq $big}]
+
+# -- a child that exits early forfeits the rest and keeps its exit code --------
+
+set r [deadman::run {head -c 8} -stdin $big]
+check stdin-early-exit 0 [dict get $r exit]
+check stdin-early-out  [string range $big 0 7] [dict get $r stdout]
+set r [deadman::run {sh -c {exit 3}} -stdin $big]
+check stdin-early-code 3 [dict get $r exit]
 
 # -- -done makes the run async; overlapping runs keep their results apart ------
 
