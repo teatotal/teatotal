@@ -9,7 +9,6 @@
 package require Tcl 9
 set ROOT [file dirname [file dirname [file dirname [file normalize [info script]]]]]
 foreach md [glob -directory [file join $ROOT modules] -type d *] { ::tcl::tm::path add $md }
-package prefer latest
 package require deadman
 
 set fails 0

@@ -1,5 +1,5 @@
 package require Tcl 9
-package provide deadman 1.0.1a1
+package provide deadman 1.0.1
 
 # deadman - a subprocess watchdog: run a command in its own process group,
 # stream its stdout, and kill the whole tree on stall, wall-clock, or the
